@@ -77,6 +77,59 @@ impl<T> RenderNode for node::ContainerNode3D<T> where T: RenderComponent {
     }
 }
 
+/// Defines physics data for a node.
+pub struct PhysicsBody {
+    pub handle: physics::BodyHandle,
+    /// This offset vector represents the offset of the rigid body coordinates from the world coordinates of the actual node.
+    /// This may be needed if the physics body does not represent the
+    pub offset: Vector3f,
+}
+
+pub trait PhysicsNode {
+    fn update_physics(&mut self, physics_world: &mut physics::World);
+}
+
+/// This trait defines a component which should respond to physics.
+pub trait PhysicsComponent {
+
+    fn update_physics(&mut self, bodies: &mut Vec<PhysicsBody>, physics_world: &mut physics::World);
+
+}
+
+pub struct Node<T> {
+    pub node: node::NodeObject3D,
+    pub physics_bodies: Vec<PhysicsBody>,
+    pub component: T,
+}
+
+impl<T> Node<T> {
+
+    /// Creates a new node containing the specified instantiated component.
+    pub fn new(component: T) -> Self {
+        let node = node::NodeObject3D::new();
+        let physics_bodies = Vec::new();
+        return Self { node, physics_bodies, component };
+    }
+
+    /// Adds a physics body to the node.
+    pub fn add_physics_body(&mut self, physics_body: PhysicsBody) {
+        self.add_physics_body(physics_body);
+    }
+
+}
+
+impl<T> RenderNode for Node<T> where T : RenderComponent {
+    fn render(&mut self, cycle: &mut RenderCycle) {
+        self.component.render(self.node.get_trans(), cycle);
+    }
+}
+
+impl<T> PhysicsNode for Node<T> where T : PhysicsComponent {
+    fn update_physics(&mut self, physics_world: &mut physics::World) {
+        self.component.update_physics(&mut self.physics_bodies, physics_world);
+    }
+}
+
 const CAMERA_FOV: f32 = 0.8;
 const CAMERA_NEAR: f32 = 100.0;
 const CAMERA_FAR: f32 = 1000000000000000000.0;
