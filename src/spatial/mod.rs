@@ -1,5 +1,8 @@
 use crate::*;
 
+use node::Node3D;
+use node::NodeObject3D;
+
 use gfx::Device;
 
 pub mod model;
@@ -79,10 +82,38 @@ impl<T> RenderNode for node::ContainerNode3D<T> where T: RenderComponent {
 
 /// Defines physics data for a node.
 pub struct PhysicsBody {
+
+    /// This handle references the actual physics body data in a physics world.
     pub handle: physics::BodyHandle,
+
     /// This offset vector represents the offset of the rigid body coordinates from the world coordinates of the actual node.
-    /// This may be needed if the physics body does not represent the
+    /// This may be needed if the physics body does not represent the actual component.
     pub offset: Vector3f,
+
+}
+
+impl PhysicsBody {
+
+    /// Creates a new physics body which can be used in collision detection.
+    pub fn create(shape: physics::ShapeHandle, offset: Vector3f, physics_world: &mut physics::World) -> Self {
+
+    }
+
+    /// Removes this physics body from the specified world.
+    pub fn remove_from_world(&self, physics_world: &mut physics::World) {
+        physics_world.remove_bodies(&[self.handle])
+    }
+
+    /// Gets an immutable reference to a body.
+    pub fn get_body(&self, physics_world: &physics::World) -> Option<&physics::RigidBody> {
+        return physics_world.rigid_body(self.handle);
+    }
+
+    /// Gets a mutable reference to a body.
+    pub fn get_body_mut(&self, physics_world: &mut physics::World) -> Option<&mut physics::RigidBody> {
+        return physics_world.rigid_body_mut(self.handle);
+    }
+
 }
 
 pub trait PhysicsNode {
@@ -92,7 +123,9 @@ pub trait PhysicsNode {
 /// This trait defines a component which should respond to physics.
 pub trait PhysicsComponent {
 
-    fn update_physics(&mut self, bodies: &mut Vec<PhysicsBody>, physics_world: &mut physics::World);
+    fn get_physics_data(&self) -> Vec<physics::ShapeHandle>;
+
+    fn update_physics(&mut self, node: &mut Node3D, bodies: &mut Vec<PhysicsBody>, physics_world: &mut physics::World);
 
 }
 
@@ -109,11 +142,6 @@ impl<T> Node<T> {
         let node = node::NodeObject3D::new();
         let physics_bodies = Vec::new();
         return Self { node, physics_bodies, component };
-    }
-
-    /// Adds a physics body to the node.
-    pub fn add_physics_body(&mut self, physics_body: PhysicsBody) {
-        self.add_physics_body(physics_body);
     }
 
 }
@@ -161,7 +189,7 @@ impl Camera {
         }
     }
 
-    pub fn reframe(&mut self, frame_size: Vector2f) {
+    pub fn set_frame_size(&mut self, frame_size: Vector2f) {
         let aspect: f32 = frame_size.x / frame_size.y;
         self.projection = Self::perspective_projection(aspect, self.fov, CAMERA_NEAR, CAMERA_FAR);
         self.frame_size = frame_size;
@@ -274,7 +302,8 @@ impl Scene {
         let camera = Camera::create(graphics.render_surface.get_size(), 0.9);
         let mesh_pipeline: MeshRenderPipeline = MeshRenderPipeline::create(&mut graphics.device, &graphics.render_pass);
         let light_list: LightList = LightList::new();
-        return Scene { camera, light_list, mesh_pipeline };
+        let physics_world: physics::World = physics::World::new();
+        return Scene { camera, light_list, mesh_pipeline, physics_world };
     }
 
     /// Removes all lights from the light list by creating a new, empty light list.

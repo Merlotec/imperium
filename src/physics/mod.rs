@@ -11,3 +11,6 @@ pub use ncollide3d::world::CollisionGroups;
 
 pub type World = nphysics3d::world::World<f32>;
 pub type Ray = ncollide3d::query::Ray<f32>;
+pub type ShapeHandle = ncollide3d::shape::ShapeHandle<f32>;
+pub type Body<'a> = nphysics3d::object::Body<'a, f32>;
+pub type RigidBody = nphysics3d::object::RigidBody<f32>;
