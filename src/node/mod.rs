@@ -43,43 +43,43 @@ impl NodeObject2D {
 
 }
 
-impl NodeObject2D {
+impl Node2D for NodeObject2D {
 
-    pub fn set_pos(&mut self, pos: Vector2f) {
+    fn set_pos(&mut self, pos: Vector2f) {
         self.trans.set_translation(pos.to_vec3());
     }
-    pub fn get_pos(&self) -> Vector2f {
+    fn get_pos(&self) -> Vector2f {
         return self.trans.get_translation().to_vec2();
     }
-    pub fn set_scale(&mut self, scale: Vector2f) {
+    fn set_scale(&mut self, scale: Vector2f) {
         self.trans.set_scale(scale.to_vec3());
     }
-    pub fn get_scale(&self) -> Vector2f {
+    fn get_scale(&self) -> Vector2f {
         return self.trans.get_scale().to_vec2();
     }
-    pub fn set_rotation(&mut self, rotation: Vector2f) {
+    fn set_rotation(&mut self, rotation: Vector2f) {
         self.rotation = rotation;
     }
-    pub fn get_rotation(&self) -> Vector2f {
+    fn get_rotation(&self) -> Vector2f {
         return self.rotation;
     }
-    pub fn set_trans(&mut self, trans: Matrix4f) {
+    fn set_trans(&mut self, trans: Matrix4f) {
         self.trans = trans;
     }
-    pub fn get_trans(&self) -> Matrix4f {
+    fn get_trans(&self) -> Matrix4f {
         let rx = Matrix4f::from_angle_x(cgmath::Rad(self.rotation.x));
         let ry = Matrix4f::from_angle_z(cgmath::Rad(self.rotation.y));
 
         let rotation: Matrix4f = rx * ry;
         return self.offset * self.trans * rotation;
     }
-    pub fn set_offset(&mut self, offset: Matrix4f) {
+    fn set_offset(&mut self, offset: Matrix4f) {
 
         // The inherited offset can only be a translation otherwise there will be issues with size and scaling.
         self.offset = Matrix4f::from_translation(offset.get_translation());
 
     }
-    pub fn get_offset(&self) -> Matrix4f {
+    fn get_offset(&self) -> Matrix4f {
         return self.offset;
     }
 
@@ -302,37 +302,37 @@ impl NodeObject3D {
 
 }
 
-impl NodeObject3D {
+impl Node3D for NodeObject3D {
 
-    pub fn set_pos(&mut self, pos: Vector3f) {
+    fn set_pos(&mut self, pos: Vector3f) {
         self.trans.set_translation(pos);
     }
 
-    pub fn get_pos(&self) -> Vector3f {
+    fn get_pos(&self) -> Vector3f {
         return self.trans.get_translation();
     }
 
-    pub fn set_scale(&mut self, scale: Vector3f) {
+    fn set_scale(&mut self, scale: Vector3f) {
         self.trans.set_scale(scale);
     }
 
-    pub fn get_scale(&self) -> Vector3f {
+    fn get_scale(&self) -> Vector3f {
         return self.trans.get_scale();
     }
 
-    pub fn set_rotation(&mut self, rotation: Vector3f) {
+    fn set_rotation(&mut self, rotation: Vector3f) {
         self.rotation = rotation;
     }
 
-    pub fn get_rotation(&self) -> Vector3f {
+    fn get_rotation(&self) -> Vector3f {
         return self.rotation;
     }
 
-    pub fn set_trans(&mut self, trans: Matrix4f) {
+    fn set_trans(&mut self, trans: Matrix4f) {
         self.trans = trans;
     }
 
-    pub fn get_trans(&self) -> Matrix4f {
+    fn get_trans(&self) -> Matrix4f {
         let rx = Matrix4f::from_angle_x(cgmath::Rad(self.rotation.x));
         let ry = Matrix4f::from_angle_y(cgmath::Rad(self.rotation.y));
         let rz = Matrix4f::from_angle_z(cgmath::Rad(self.rotation.z));
@@ -341,13 +341,14 @@ impl NodeObject3D {
         return self.offset * self.trans * rotation;
     }
 
-    pub fn set_offset(&mut self, offset: Matrix4f) {
+    fn set_offset(&mut self, offset: Matrix4f) {
         self.offset = Matrix4f::from_translation(offset.get_translation());
     }
 
-    pub fn get_offset(&self) -> Matrix4f {
+    fn get_offset(&self) -> Matrix4f {
         return self.offset;
     }
+
 }
 
 /// The render node structure is a container structure which holds a render component as a node.

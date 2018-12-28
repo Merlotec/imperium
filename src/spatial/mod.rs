@@ -3,6 +3,8 @@ use crate::*;
 use node::Node3D;
 use node::NodeObject3D;
 
+use physics::nphysics3d::volumetric::Volumetric;
+
 use gfx::Device;
 
 pub mod model;
@@ -80,7 +82,35 @@ impl<T> RenderNode for node::ContainerNode3D<T> where T: RenderComponent {
     }
 }
 
+/// This trait defines standard update behaviour for a scene node.
+pub trait SceneComponent {
+
+    fn update(&mut self, node: &mut Node3D, scene: &mut Scene);
+
+}
+
+pub trait SceneNode {
+
+    fn update(&mut self, scene: &mut Scene);
+
+}
+
+pub struct PhysicsGeometry {
+
+    /// The actual geometry.
+    pub shape: physics::ShapeHandle,
+
+    /// The position, in local coordinates, of this geometry.
+    /// This can also be described as it's offset from the node's position.
+    pub offset: Vector3f,
+
+}
+
+const COLLIDER_MARGIN: f32 = 0.01;
+
 /// Defines physics data for a node.
+/// This struct holds a handle to the actual physics body held in a physics world.
+/// Therefore, the physics world is needed for most operations.
 pub struct PhysicsBody {
 
     /// This handle references the actual physics body data in a physics world.
@@ -95,27 +125,62 @@ pub struct PhysicsBody {
 impl PhysicsBody {
 
     /// Creates a new physics body which can be used in collision detection.
-    pub fn create(shape: physics::ShapeHandle, offset: Vector3f, physics_world: &mut physics::World) -> Self {
+    pub fn create(geometry: PhysicsGeometry, physics_world: &mut physics::World) -> Self {
+        let inertia = geometry.shape.inertia(1.0);
+        let center_of_mass = geometry.shape.center_of_mass();
+        let pos: physics::na::Isometry<f32, _, _> = physics::na::Isometry3::new(physics::na::Vector3::new(geometry.offset.x, geometry.offset.y, geometry.offset.z), physics::na::zero());
+        let handle = physics_world.add_rigid_body(pos, inertia, center_of_mass);
+        physics_world.add_collider(
+            COLLIDER_MARGIN,
+            geometry.shape.clone(),
+            handle,
+            physics::na::Isometry3::identity(),
+            physics::physical::object::Material::default(),
+        );
+        if let Some(body) = physics_world.rigid_body_mut(handle) {
+            body.set_status(physics::physical::object::BodyStatus::Static);
 
+        }
+        physics_world.activate_body(handle);
+        return Self { handle, offset: geometry.offset };
+    }
+
+    /// Gets the position of the physics body in the specified world.
+    pub fn get_pos(&self, physics_world: &physics::World) -> Option<Vector3f> {
+        if let Some(body) = self.get_body(physics_world) {
+            let vec = body.position().translation.vector;
+            return Some(Vector3f::new(vec.x, vec.y, vec.z));
+        }
+        return None;
+    }
+
+    /// Sets the position of the physics body in the specified world.
+    pub fn set_pos(&self, pos: Vector3f, physics_world: &mut physics::World) {
+        if let Some(body) = self.get_body_mut(physics_world) {
+            let mut position: physics::na::Isometry<f32, _, _> = physics::na::Isometry3::new(physics::na::Vector3::new(pos.x, pos.y, pos.z), physics::na::zero());
+            position.translation.vector = physics::na::Vector3::new(pos.x, pos.y, pos.z);
+            body.set_position(position);
+        }
     }
 
     /// Removes this physics body from the specified world.
     pub fn remove_from_world(&self, physics_world: &mut physics::World) {
-        physics_world.remove_bodies(&[self.handle])
+        physics_world.remove_bodies(&[self.handle]);
     }
 
     /// Gets an immutable reference to a body.
-    pub fn get_body(&self, physics_world: &physics::World) -> Option<&physics::RigidBody> {
+    pub fn get_body<'a>(&self, physics_world: &'a physics::World) -> Option<&'a physics::RigidBody> {
         return physics_world.rigid_body(self.handle);
     }
 
     /// Gets a mutable reference to a body.
-    pub fn get_body_mut(&self, physics_world: &mut physics::World) -> Option<&mut physics::RigidBody> {
+    pub fn get_body_mut<'a>(&self, physics_world: &'a mut physics::World) -> Option<&'a mut physics::RigidBody> {
         return physics_world.rigid_body_mut(self.handle);
     }
 
 }
 
+/// Represents a physics node which contains its own physics data.
 pub trait PhysicsNode {
     fn update_physics(&mut self, physics_world: &mut physics::World);
 }
@@ -123,9 +188,12 @@ pub trait PhysicsNode {
 /// This trait defines a component which should respond to physics.
 pub trait PhysicsComponent {
 
-    fn get_physics_data(&self) -> Vec<physics::ShapeHandle>;
+    /// Should return the geometry of this component.
+    /// There can be multiple geometry 'sections' for any physics component.
+    fn get_physics_geometry(&self) -> Vec<PhysicsGeometry>;
 
-    fn update_physics(&mut self, node: &mut Node3D, bodies: &mut Vec<PhysicsBody>, physics_world: &mut physics::World);
+    /// Updates the physics bodies of a component which manages physics.
+    fn update_physics(&mut self, bodies: &mut Vec<PhysicsBody>, physics_world: &mut physics::World);
 
 }
 
@@ -154,8 +222,32 @@ impl<T> RenderNode for Node<T> where T : RenderComponent {
 
 impl<T> PhysicsNode for Node<T> where T : PhysicsComponent {
     fn update_physics(&mut self, physics_world: &mut physics::World) {
+        //TODO: We need to be able to represent rotation as well as translation.
+        if let Some(body) = self.physics_bodies.first() {
+            if let Some(pos) = body.get_pos(physics_world) {
+                self.node.set_pos(pos);
+            }
+        }
         self.component.update_physics(&mut self.physics_bodies, physics_world);
     }
+}
+
+impl<T> SceneNode for Node<T> where T : SceneComponent {
+    fn update(&mut self, scene: &mut Scene) {
+        self.component.update(&mut self.node, scene);
+    }
+}
+
+impl<T> node::NodeImplementor3D for Node<T> {
+
+    fn get_node_obj(&self) -> &NodeObject3D {
+        return &self.node;
+    }
+
+    fn get_node_obj_mut(&mut self) -> &mut NodeObject3D {
+        return &mut self.node;
+    }
+
 }
 
 const CAMERA_FOV: f32 = 0.8;
@@ -345,6 +437,16 @@ impl Scene {
 
     pub fn render_mesh_batch(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transforms: &[render::RenderTransform], graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
         self.mesh_pipeline.render_batch(vertex_input, texture_set, transforms, graphics, encoder);
+    }
+
+    /// Updates a standard scene node.
+    pub fn update_node(&mut self, node: &mut SceneNode) {
+        node.update(self);
+    }
+
+    /// Updates the physics node.
+    pub fn update_physics(&mut self, physics_node: &mut PhysicsNode) {
+        physics_node.update_physics(&mut self.physics_world);
     }
 
 }

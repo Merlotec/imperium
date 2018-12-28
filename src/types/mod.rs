@@ -330,13 +330,13 @@ impl std::cmp::PartialEq for Handle {
 /// This is the container struct for handled object data.
 /// Data of a specific type can be added and handles will be created.
 /// That data can then be accessed using the handle.
-pub struct HandledData<T : ?Sized> {
+pub struct HandledData<T> {
 
     pub data: Vec<HandledObject<T>>,
 
 }
 
-impl<T : ?Sized> HandledData<T> {
+impl<T> HandledData<T> {
 
     pub fn new() -> Self {
         return Self { data: Vec::new() };
@@ -384,10 +384,12 @@ impl<T : ?Sized> HandledData<T> {
     }
 
     pub fn get_handled_access<'a>(&'a mut self, handle: Handle) -> Option<(&'a mut T, HandledDataAccess<'a, T>)> {
-        if let Some(data) = self.get_mut(handle) {
-            let vec_unsafe: &'a mut Vec<HandledObject<T>> = unsafe { mem::transmute(&mut self.data) };
+        let vec_unsafe: &'a mut Vec<HandledObject<T>> = unsafe { mem::transmute(&mut self.data) };
+        if let Some(data) = self.get_mut(handle.clone()) {
             let access: HandledDataAccess<'a, T> = HandledDataAccess::new(vec_unsafe, handle.get_index());
+            return Some((data , access));
         }
+        return None;
     }
 
     pub fn get_handles(&self) -> Vec<Handle> {
@@ -440,22 +442,6 @@ impl<'a, T> HandledDataAccess<'a, T> {
         return Self { data, excl, iter: 0 };
     }
 
-}
-
-impl<'a, 'b, T> Iterator for HandledDataAccess<'a, T> {
-    type Item = &'b mut HandledObject<T>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.iter == self.excl {
-            self.iter += 1;
-        }
-        let result: Option<&'a mut HandledObject<T>> = self.data.get_mut(self.iter);
-        if result.is_some() {
-            self.iter += 1;
-        } else {
-            self.iter = 0;
-        }
-        return result;
-    }
 }
 
 /// This is a container struct which holds any object with a specific identifier attached.
