@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::mem;
+use std::ptr;
 
 // Using 64 bit types for standard vectors.
 // This can be changed to use 32 bit types if memory is limited.
@@ -265,7 +266,7 @@ pub trait Identified {
 
 }
 
-/// This structure represents a handle to an imperium object.
+/// This structure represents a handle to an imperium_core object.
 /// This can be any object, and should be used as follows:
 /// The index should be the last known index of the array in which the object is contained.
 /// The id should match the id stored in the component that this handle references.
@@ -371,6 +372,7 @@ impl<T> HandledData<T> {
     }
 
     /// Removes a the object with the specified handle.
+    /// This function does contain internal calls to unsafe code, but if used properly, everything should function safely.
     pub fn remove(&mut self, handle: Handle) -> T {
         let index: usize = handle.get_index();
         let result = self.data.remove(index);
@@ -474,6 +476,49 @@ impl<T> std::ops::DerefMut for HandledObject<T> {
 
     fn deref_mut(&mut self) -> &mut Self::Target {
         return &mut self.value;
+    }
+
+}
+
+/// This struct provides an extremely unsafe way to access a pointer.
+/// It is very primitive in that it has to be manually invalidated if the object it references is destroyed.
+pub struct UnsafeAccess<T> {
+
+    valid: bool,
+    raw: *mut T,
+
+}
+
+impl<T> UnsafeAccess<T> {
+
+    /// Creates a new unsafe access to a value.
+    /// This is completely unsafe. If the
+    pub fn new(raw: *mut T) -> Self {
+        return Self { valid: true, raw };
+    }
+
+    pub const fn invalid() -> Self {
+        return Self { valid: false, raw: ptr::null_mut() };
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+    }
+
+    pub unsafe fn get(&self) -> Option<&T> {
+        if self.valid {
+            return Some(& *self.raw);
+        } else {
+            return None;
+        }
+    }
+
+    pub unsafe fn get_mut(&mut self) -> Option<&mut T> {
+        if self.valid {
+            return Some(&mut *self.raw);
+        } else {
+            return None;
+        }
     }
 
 }

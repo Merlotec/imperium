@@ -1,5 +1,8 @@
 use crate::*;
 
+use std::ops::Deref;
+use std::ops::DerefMut;
+
 use node::Node3D;
 use node::NodeObject3D;
 
@@ -95,6 +98,22 @@ pub trait SceneNode {
 
 }
 
+/// The container struct for all the physics data of a node.
+/// This includes bodies and will also include joints in the future.
+pub struct PhysicsData {
+
+    pub bodies: Vec<PhysicsBody>,
+
+}
+
+impl PhysicsData {
+    pub fn none() -> Self {
+        let bodies: Vec<PhysicsBody> = Vec::new();
+        return Self { bodies };
+    }
+}
+
+/// Contains geometric data for physics simulations.
 pub struct PhysicsGeometry {
 
     /// The actual geometry.
@@ -103,6 +122,27 @@ pub struct PhysicsGeometry {
     /// The position, in local coordinates, of this geometry.
     /// This can also be described as it's offset from the node's position.
     pub offset: Vector3f,
+
+}
+
+impl PhysicsGeometry {
+
+    /// Creates a new physics geometry object with a cube shape.
+    /// The length of each side will be x.
+    pub fn cube(x: f32) -> PhysicsGeometry {
+        return PhysicsGeometry::cuboid(Vector3f::new(x, x, x));
+    }
+
+    /// Creates a new cuboid physics shape that can be used for collision detection.
+    /// The dimensions of the cuboid are specified by the `dimensions` parameter.
+    pub fn cuboid(dimensions: Vector3f) -> PhysicsGeometry {
+        let shape: physics::ShapeHandle = physics::ShapeHandle::new(
+            physics::collide::shape::Cuboid::new(
+                physics::na::Vector3::new(dimensions.x / 2.0, dimensions.y / 2.0, dimensions.z / 2.0)
+            )
+        );
+        return PhysicsGeometry { shape, offset: Vector3f::zero() };
+    }
 
 }
 
@@ -154,6 +194,19 @@ impl PhysicsBody {
         return None;
     }
 
+    /// This gets the position of the central position from which this physics body is offset from.
+    pub fn get_absolute_pos(&self, physics_world: &physics::World) -> Option<Vector3f> {
+        if let Some(pos) = self.get_pos(physics_world) {
+            return Some(pos - self.offset);
+        }
+        return None;
+    }
+
+    /// This gets the position of the central position from which this physics body is offset from.
+    pub fn set_absolute_pos(&self, pos: Vector3f, physics_world: &mut physics::World) {
+        self.set_pos(pos + self.offset, physics_world);
+    }
+
     /// Sets the position of the physics body in the specified world.
     pub fn set_pos(&self, pos: Vector3f, physics_world: &mut physics::World) {
         if let Some(body) = self.get_body_mut(physics_world) {
@@ -182,7 +235,9 @@ impl PhysicsBody {
 
 /// Represents a physics node which contains its own physics data.
 pub trait PhysicsNode {
+
     fn update_physics(&mut self, physics_world: &mut physics::World);
+
 }
 
 /// This trait defines a component which should respond to physics.
@@ -190,16 +245,16 @@ pub trait PhysicsComponent {
 
     /// Should return the geometry of this component.
     /// There can be multiple geometry 'sections' for any physics component.
-    fn get_physics_geometry(&self) -> Vec<PhysicsGeometry>;
+    fn create_physics(&self, physics_world: &mut physics::World) -> PhysicsData;
 
     /// Updates the physics bodies of a component which manages physics.
-    fn update_physics(&mut self, bodies: &mut Vec<PhysicsBody>, physics_world: &mut physics::World);
+    fn update_physics(&mut self, physics_data: &mut PhysicsData, physics_world: &mut physics::World);
 
 }
 
 pub struct Node<T> {
     pub node: node::NodeObject3D,
-    pub physics_bodies: Vec<PhysicsBody>,
+    pub physics_data: PhysicsData,
     pub component: T,
 }
 
@@ -208,8 +263,8 @@ impl<T> Node<T> {
     /// Creates a new node containing the specified instantiated component.
     pub fn new(component: T) -> Self {
         let node = node::NodeObject3D::new();
-        let physics_bodies = Vec::new();
-        return Self { node, physics_bodies, component };
+        let physics_data = PhysicsData::none();
+        return Self { node, physics_data, component };
     }
 
 }
@@ -220,21 +275,48 @@ impl<T> RenderNode for Node<T> where T : RenderComponent {
     }
 }
 
+impl<T> Node<T> where T : PhysicsComponent {
+
+    pub fn with_physics(component: T, physics_world: &mut physics::World) -> Self {
+        let node = node::NodeObject3D::new();
+        let physics_data = component.create_physics(physics_world);
+        return Self { node, physics_data, component };
+    }
+
+    pub fn create_physics(&mut self, physics_world: &mut physics::World) {
+        self.physics_data = self.component.create_physics(physics_world);
+    }
+}
+
 impl<T> PhysicsNode for Node<T> where T : PhysicsComponent {
     fn update_physics(&mut self, physics_world: &mut physics::World) {
         //TODO: We need to be able to represent rotation as well as translation.
-        if let Some(body) = self.physics_bodies.first() {
+        //TODO: Here we use the first body to get the transform.
+        if let Some(body) = self.physics_data.bodies.first() {
             if let Some(pos) = body.get_pos(physics_world) {
                 self.node.set_pos(pos);
             }
         }
-        self.component.update_physics(&mut self.physics_bodies, physics_world);
+        self.component.update_physics(&mut self.physics_data, physics_world);
     }
 }
 
 impl<T> SceneNode for Node<T> where T : SceneComponent {
     fn update(&mut self, scene: &mut Scene) {
         self.component.update(&mut self.node, scene);
+    }
+}
+
+impl<T> Deref for Node<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        return &self.component;
+    }
+}
+
+impl<T> DerefMut for Node<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        return &mut self.component;
     }
 }
 

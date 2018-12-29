@@ -314,7 +314,7 @@ pub fn log_panic(data: String) {
     if unsafe { PRINT_PANIC } {
         println!("{} {}", "PANIC LOG:".bold().bright_red(), data.bright_red());
     }
-    panic!("Engine panic at 'log(panic)'");
+    panic!("Engine panic at 'log(panic)': {}", data);
 }
 
 pub trait LogExpect {
