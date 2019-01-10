@@ -4,6 +4,9 @@ pub use cgmath::*;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::collections::hash_map::DefaultHasher;
 use std::mem;
 use std::ptr;
 
@@ -210,11 +213,11 @@ impl Translatable for Matrix4f {
 }
 
 /**
-This enum can hold any different type of heap memory (ie. Box, Rc, Arc, RefCell etc.)
+This enum can hold different types of heap memory (ie. Box and Arc - not Rc because it is not thread safe)
+It is trhead safe.
 */
 pub enum Heap<T> {
     Box(std::boxed::Box<T>),
-    Rc(std::rc::Rc<T>),
     Arc(std::sync::Arc<T>),
 }
 
@@ -222,7 +225,6 @@ impl<T> std::convert::AsRef<T> for Heap<T> {
     fn as_ref(&self) -> &T {
         match self {
             Heap::Box(v) => v.as_ref(),
-            Heap::Rc(v) => v.as_ref(),
             Heap::Arc(v) => v.as_ref(),
         }
     }
@@ -239,21 +241,21 @@ impl<T> std::ops::Deref for Heap<T> {
 /// For example, in some cases, data might need to be shared to increase efficiency.
 /// In this case, a Heap(Rc()) can be used.
 /// In other cases it may be more optimal to store by value rather than by reference, so a Val() can be used.
-pub enum Resource<T> {
+pub enum Res<T> {
     Heap(Heap<T>),
     Val(T),
 }
 
-impl<T> std::convert::AsRef<T> for Resource<T> {
+impl<T> std::convert::AsRef<T> for Res<T> {
     fn as_ref(&self) -> &T {
         match self {
-            Resource::Heap(h) => return h.as_ref(),
-            Resource::Val(v) => return &v,
+            Res::Heap(h) => return h.as_ref(),
+            Res::Val(v) => return &v,
         }
     }
 }
 
-impl<T> std::ops::Deref for Resource<T> {
+impl<T> std::ops::Deref for Res<T> {
     type Target = T;
     fn deref(&self) -> &T {
         return self.as_ref();
@@ -484,7 +486,9 @@ impl<T> std::ops::DerefMut for HandledObject<T> {
 /// It is very primitive in that it has to be manually invalidated if the object it references is destroyed.
 pub struct UnsafeAccess<T> {
 
+    /// Whether the pointer is valid or not.
     valid: bool,
+    /// The raw pointer to the value.
     raw: *mut T,
 
 }
@@ -497,14 +501,18 @@ impl<T> UnsafeAccess<T> {
         return Self { valid: true, raw };
     }
 
+    /// Creates a new invalid unsafe access object.
+    /// This can be usd when initializing statics as it is a constant function (const fn).
     pub const fn invalid() -> Self {
         return Self { valid: false, raw: ptr::null_mut() };
     }
 
+    /// Causes the current unsafe access object to become invalidated, meaning that accessing it will return None.
     pub fn invalidate(&mut self) {
         self.valid = false;
     }
 
+    /// Unsafely gets the reference of the object accessed and returns None if this object has been invalidated.
     pub unsafe fn get(&self) -> Option<&T> {
         if self.valid {
             return Some(& *self.raw);
@@ -513,6 +521,7 @@ impl<T> UnsafeAccess<T> {
         }
     }
 
+    /// Unsafely gets the mutable reference of the object accessed and returns None if this object has been invalidated.
     pub unsafe fn get_mut(&mut self) -> Option<&mut T> {
         if self.valid {
             return Some(&mut *self.raw);
@@ -523,3 +532,39 @@ impl<T> UnsafeAccess<T> {
 
 }
 
+/// This struct represents an identifier which is streamlined for comparison operations.
+/// An Id can be created from hashing a string using `Id::hash("my_string")`.
+#[derive(Clone)]
+pub struct Id(u64, Option<String>);
+
+impl Id {
+
+    pub fn new(raw: u64) -> Self {
+        return Id(raw, None);
+    }
+
+    /// Creates a new id (64 bit unsigned integer) by hashing the specified string.
+    pub fn hash(string: &str) -> Self {
+        let mut hasher: DefaultHasher = DefaultHasher::new();
+        string.hash(&mut hasher);
+        let hash: u64 = hasher.finish();
+        return Id(hash, Some(string.to_string()));
+    }
+
+    pub fn get_str(&self) -> Option<&str> {
+        if let Some(string) = self.1.as_ref() {
+            return Some(string);
+        }
+        return None;
+    }
+
+
+}
+
+impl PartialEq for Id {
+
+    fn eq(&self, other: &Self) -> bool {
+        return self.0 == other.0;
+    }
+
+}

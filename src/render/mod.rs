@@ -14,6 +14,8 @@ const DEPTH_FORMAT: gfx::format::Format = gfx::format::Format::D32FloatS8Uint;
 
 pub struct Surface {
 
+    pub is_valid: bool,
+
     pub window_surface: window::WindowSurface,
 
     pub swapchain: <Backend as gfx::Backend>::Swapchain,
@@ -86,8 +88,13 @@ impl Surface {
             gfx::Backbuffer::Framebuffer(fbo) => (vec![], vec![fbo]),
         };
 
-        return Surface { window_surface, swapchain, images, framebuffers, viewport, depth_view }
+        return Surface { is_valid: true, window_surface, swapchain, images, framebuffers, viewport, depth_view }
 
+    }
+
+    /// Makes the swapchain invalid so that we must rebuild it next frame.
+    pub fn invalidate(&mut self) {
+        self.is_valid = false;
     }
 
     /// Rebuilds the swapchain data for this surface object.
@@ -156,6 +163,9 @@ impl Surface {
         self.framebuffers = framebuffers;
         self.depth_view = depth_view;
         self.viewport = viewport;
+
+        // Revalidate.
+        self.is_valid = true;
     }
 
     pub fn destroy(&mut self, device: &core::Device, command_dispatch: &mut command::CommandDispatch) {
@@ -279,11 +289,8 @@ pub struct Renderer {
 impl Renderer {
 
     pub fn create(instance: &core::Instance, window: &window::Window) -> Self {
-
         let graphics: Graphics = Graphics::create(instance, window);
-
         let command_dispatch: command::CommandDispatch = command::CommandDispatch::create(&graphics.device);
-
         return Self { graphics, command_dispatch };
     }
 
@@ -378,3 +385,55 @@ impl RenderTransform {
     }
 
 }
+
+pub struct RenderCore<'a, 'b : 'a> {
+    pub graphics: &'a mut Graphics,
+    // We need to use a raw pointer as to avoid lifetimes. (I know... it's exciting)
+    pub encoder: &'a mut command::Encoder<'b>,
+}
+
+impl<'a, 'b : 'a> RenderCore<'a, 'b> {
+    pub fn new(graphics: &'a mut Graphics, encoder: &'a mut command::Encoder<'b>) -> Self {
+        return Self { graphics, encoder };
+    }
+}
+
+pub struct RenderCoreUnsafe {
+    graphics: *mut Graphics,
+    // We need to use a raw pointer as to avoid lifetimes. (I know... it's exciting)
+    encoder: *mut (),
+}
+
+impl RenderCoreUnsafe {
+    /// FOR THIS TO BE USED SAFELY, ONLY ONE BORROW OF GRAPHICS AND ENCODER SHOULD BE DONE AT ONCE, AND THIS OBJECT SHOULD NOT LIVE LONGER THAN THE RENDER CYCLE!!!
+    pub fn new(graphics: *mut Graphics, encoder: *mut command::Encoder) -> Self {
+        return Self { graphics, encoder: encoder as *mut () };
+    }
+
+    /// This is suicide...
+    pub unsafe fn make_safe(&mut self) -> &mut RenderCore {
+        return &mut *((self as *mut RenderCoreUnsafe) as *mut RenderCore);
+    }
+
+    pub unsafe fn graphics(&self) -> &Graphics {
+        return &*self.graphics;
+    }
+
+    /// Although it should be used in a safe context, we will mark it as unsafe purely due to the nature of these operations.
+    /// We're even following the mutability rules here!
+    pub unsafe fn graphics_mut(&mut self) -> &mut Graphics {
+        return &mut *self.graphics;
+    }
+
+    pub unsafe fn encoder(&self) -> &command::Encoder {
+        return &*(self.encoder as *mut command::Encoder);
+    }
+
+    pub unsafe fn encoder_mut(&mut self) -> &mut command::Encoder {
+        // We are downgrading to const.
+        return &mut *(self.encoder as *mut command::Encoder);
+    }
+}
+
+unsafe impl Send for RenderCoreUnsafe {}
+unsafe impl Sync for RenderCoreUnsafe {}

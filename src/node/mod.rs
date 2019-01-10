@@ -285,6 +285,7 @@ impl <T: NodeImplementor3D> Node3D for T where T: NodeImplementor3D {
 
 }
 
+#[derive(Copy, Clone)]
 pub struct NodeObject3D {
 
     pub trans: Matrix4f,
@@ -398,4 +399,12 @@ impl<T> DerefMut for ContainerNode3D<T> {
         return &mut self.component;
     }
 
+}
+
+impl specs::Component for NodeObject2D {
+    type Storage = specs::DenseVecStorage<Self>;
+}
+
+impl specs::Component for NodeObject3D {
+    type Storage = specs::DenseVecStorage<Self>;
 }

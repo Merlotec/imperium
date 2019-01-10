@@ -148,8 +148,8 @@ impl MeshRenderPipeline {
 
         let pipeline_layout = pipeline::PipelineLayout::create(&[&intrinsic_descriptor_interface.layout, &texture_input_desc], &[(gfx::pso::ShaderStageFlags::VERTEX, 0..(Self::num_push_constants() as u32))], device);
 
-        let vertex_shader_module = device.load_shader_raw(include_bytes!("../../shaders/bin/std_mesh_v.spv")).expect("Fatal Error: Failed to create model vertex shader.");
-        let fragment_shader_module = device.load_shader_raw(include_bytes!("../../shaders/bin/std_mesh_f.spv")).expect("Fatal Error: Failed to create model fragment shader.");
+        let vertex_shader_module = device.load_shader_raw(include_bytes!("../../../shaders/bin/std_mesh_v.spv")).expect("Fatal Error: Failed to create model vertex shader.");
+        let fragment_shader_module = device.load_shader_raw(include_bytes!("../../../shaders/bin/std_mesh_f.spv")).expect("Fatal Error: Failed to create model fragment shader.");
         let pipeline_object: pipeline::Pipeline = {
             let vs_entry = gfx::pso::EntryPoint::<backend::Backend> {
                 entry: "main",
@@ -272,10 +272,7 @@ impl MeshRenderPipeline {
     /// Each texture rendering object should construct on of these using the layout specified in the 'texture_input_desc' field.
     /// This layout is ()
     pub fn render(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transform: render::RenderTransform, graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
-        if !self.is_bound {
-            self.pipeline.bind(encoder);
-            self.is_bound = true;
-        }
+        self.pipeline.bind(encoder);
         self.pipeline.bind_descriptor_sets(&[&self.intrinsic_descriptor_interface.set, texture_set], encoder);
         encoder.pass.bind_vertex_buffers(0, vec![(&vertex_input.vertex_buffer.buf, 0)]);
         if let Some(index_buffer) = vertex_input.index_buffer {
@@ -291,7 +288,6 @@ impl MeshRenderPipeline {
     }
 
     pub fn render_batch(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transforms: &[render::RenderTransform], graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
-
         if !self.is_bound {
             self.pipeline.bind(encoder);
             self.is_bound = true;

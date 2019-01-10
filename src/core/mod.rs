@@ -69,6 +69,8 @@ pub struct Imperium {
 
     pub clear_color: Color,
 
+    pub should_terminate: bool,
+
 }
 
 impl Imperium {
@@ -78,74 +80,48 @@ impl Imperium {
         let window: window::Window = window::Window::create_fullscreen(application_name).expect("Fatal Error: Failed to create primary window for Imperium Engine.");
         let renderer: render::Renderer = render::Renderer::create(&instance, &window);
 
-        return Imperium { instance, window, renderer, clear_color: Color::black() };
+        return Imperium { instance, window, renderer, clear_color: Color::black(), should_terminate: false };
     }
 
-    /// Takes ownership of the current thread and continuously executes the current thread and handles window events.
-    /// This function calls the 'update' function to update the component in every iteration of the loop.
-    pub fn run(&mut self, component: &mut Component) {
-
-        let mut inst = std::time::Instant::now();
-
-        // Main game loop.
-        // TODO: Add window management and events.
-        loop {
-            let delta: f32 = {
-                let dur = inst.elapsed();
-                let secs = dur.as_secs() as f32;
-                let subsecs = dur.subsec_millis() as f32 / 1000.0;
-
-                secs + subsecs
-            };
-            inst = std::time::Instant::now();
-
-            if self.update(component, delta) {
-                break;
-            }
-        }
-
-    }
-
-    pub fn update(&mut self, component: &mut Component, delta: f32) -> bool {
-
+    pub fn poll_events(&mut self) -> Vec<window::Event> {
         let events: Vec<window::Event> = self.window.collect_events();
-
-        let mut rebuild_swapchain: bool = false;
-        let mut quitting: bool = false;
-
         for event in events.iter() {
             if let window::winit::Event::WindowEvent { event, .. } = event {
                 match event {
-                    window::winit::WindowEvent::CloseRequested => quitting = true,
+                    window::winit::WindowEvent::CloseRequested => self.should_terminate = true,
                     // We need to recreate our swapchain if we resize, so we'll set
                     // a flag when that happens.
                     window::winit::WindowEvent::Resized(_) => {
-                        rebuild_swapchain = true;
+                        self.invalidate_surface();
                     }
                     _ => {}
                 }
             }
         }
+        return events;
+    }
 
-
-        component.handle_events(&events, &mut self.renderer, &mut self.window, delta);
-
-        // Update Cycle.
-        // We need to use this scope or else the command dispatch and renderer will be borrowed mutably again later for the render cycle.
-        component.update(&mut self.renderer, &mut self.window, delta);
-
+    pub fn render<F>(&mut self, mut f: F)
+        where F: FnMut(&mut render::Graphics, &mut command::Encoder) {
         // Render Cycle.
-        if self.renderer.command_dispatch.dispatch_render(self.clear_color, &mut self.renderer.graphics, |graphics, encoder| {
-            component.render(graphics, encoder);
+        if !self.renderer.command_dispatch.dispatch_render(self.clear_color, &mut self.renderer.graphics, |graphics, encoder| {
+            f(graphics, encoder);
         }) {
-            rebuild_swapchain = true;
+            // If rendering failed, we should rebuild swapchain.
+            self.invalidate_surface();
         }
-        if quitting {
-            return true;
-        } else if rebuild_swapchain {
+
+    }
+
+    pub fn update(&mut self) {
+        if !self.renderer.graphics.render_surface.is_valid {
             self.renderer.graphics.render_surface.rebuild(&mut self.renderer.graphics.device, &self.window, &self.renderer.graphics.render_pass, &mut self.renderer.command_dispatch);
+            log!(debug, 0, "Rebuilding swapchain.");
         }
-        return false;
+    }
+
+    pub fn invalidate_surface(&mut self) {
+        self.renderer.graphics.render_surface.invalidate();
     }
 
     pub fn graphics(&mut self) -> &mut render::Graphics {
@@ -161,7 +137,7 @@ pub struct Device {
 
     pub color_format: gfx::format::Format,
     pub adapter: gfx::Adapter<Backend>,
-    pub device: Rc<<Backend as gfx::Backend>::Device>,
+    pub device: Arc<<Backend as gfx::Backend>::Device>,
     pub queue_group: gfx::QueueGroup<Backend, gfx::Graphics>,
 
     pub capabilites: gfx::SurfaceCapabilities,
@@ -198,7 +174,7 @@ impl Device {
             }
         };
 
-        return Device { color_format, adapter: adapter, device: Rc::new(device), queue_group, capabilites: caps };
+        return Device { color_format, adapter: adapter, device: Arc::new(device), queue_group, capabilites: caps };
 
     }
 
@@ -251,7 +227,7 @@ impl Device {
 /// This token can be used to destroy objects.
 pub struct DeviceToken {
 
-    pub device: Rc<<Backend as gfx::Backend>::Device>,
+    pub device: Arc<<Backend as gfx::Backend>::Device>,
 
 }
 

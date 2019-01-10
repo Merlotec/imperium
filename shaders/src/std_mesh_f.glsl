@@ -62,7 +62,7 @@ void main() {
 
     }
 
-    //target = vec4(0.0, 0.0, 1.0, 1.0);
-    target = texture(sampler2D(colormap, colorsampler), uv) * vec4(TotalDiffuse.xyz + TotalAmbient.xyz, 1.0);
-    //target = texture(sampler2D(colormap, colorsampler), uv);
+    //target = vec4(1.0, 1.0, 1.0, 1.0);
+    //target = texture(sampler2D(colormap, colorsampler), uv) * vec4(TotalDiffuse.xyz + TotalAmbient.xyz, 1.0);
+    target = texture(sampler2D(colormap, colorsampler), uv);
 }

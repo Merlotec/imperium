@@ -3,6 +3,8 @@ use crate::*;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
+use std::mem;
+
 use node::Node3D;
 use node::NodeObject3D;
 
@@ -13,9 +15,66 @@ use gfx::Device;
 pub mod model;
 pub mod light;
 
-pub mod mesh_pipeline;
+pub mod pipe;
+pub mod sys;
 
-use self::mesh_pipeline::*;
+use specs::prelude::*;
+
+use self::pipe::mesh::*;
+
+pub type Scene3D<'a, 'b> = scene::Scene<'a, 'b, Spatial>;
+pub type PrimaryEntity3D<C: scene::ComponentOf<Spatial>> = scene::PrimaryEntity<Spatial, C>;
+
+/// The NodeObject3D can be used as a Spatial component.
+impl scene::ComponentOf<Spatial> for NodeObject3D {}
+
+/// The spatial aggregator for use with a `Scene`.
+pub struct Spatial;
+
+impl scene::HasIntrinsic<NodeObject3D> for Spatial {}
+
+impl scene::Aggregator for Spatial {
+
+    /// Not `Self` - that would be cyclic.
+    /// Here `self` (lower case `s`) denotes this module.
+    type Camera = self::Camera;
+
+    fn build_entity(mut entity_builder: scene::EntityBuilder) -> scene::Entity where Self : Sized {
+        return entity_builder.with(NodeObject3D::new()).build();
+    }
+    fn load<'a, 'b : 'a>(&mut self, renderer: &mut render::Renderer, dispatcher_builder: scene::DispatcherBuilder<'a, 'b>, world: &mut scene::World) -> scene::DispatcherBuilder<'a, 'b> {
+        world.register::<NodeObject3D>();
+        world.register::<model::MeshComponent>();
+
+        world.add_resource(MeshRenderPipeline::create(&mut renderer.graphics.device, &mut renderer.graphics.render_pass));
+
+        dispatcher_builder.with(sys::MeshRenderSystem, "render::mesh", &[])
+    }
+    fn update(&mut self, world: &mut scene::World) {
+
+    }
+}
+
+impl<A: scene::Aggregator, C: scene::ComponentOf<A>> scene::PrimaryEntity<A, C>
+    where NodeObject3D : scene::ComponentOf<A>, A : scene::HasIntrinsic<NodeObject3D>  {
+    pub fn get_node<'a, 'b>(&'a self, world: &'b scene::World) -> Option<&'b node::Node3D> {
+        let node_storage = world.read_storage::<node::NodeObject3D>();
+        if let Some(cmp) = node_storage.get(self.entity) {
+            return Some(unsafe { mem::transmute(cmp as &node::Node3D) });
+        }
+        return None;
+    }
+
+    /// I think that this is allowed because the storage references data in the World object.
+    /// This means that even if the storage object is destroyed, the data it points to is still valid.s
+    pub fn node_mut<'a, 'b>(&'a self, world: &'b mut scene::World) -> Option<&'b mut node::Node3D> {
+        let mut node_storage = world.write_storage::<node::NodeObject3D>();
+        if let Some(cmp) =  node_storage.get_mut(self.entity) {
+            return Some(unsafe { mem::transmute(cmp as &mut node::Node3D) });
+        }
+        return None;
+    }
+}
 
 /// The RenderCycle object is an encapsulating structure which includes all data needed for rendering a scene.
 /// This simply makes code more readable as we only need one parameter rather than three.
@@ -35,7 +94,7 @@ impl<'a, 'b : 'a> RenderCycle<'a, 'b> {
     }
 
     /// Renders the node by calling its render function.
-    pub fn render(&mut self, node: &mut RenderNode) {
+    pub fn render(&mut self, node: &mut ComponentNode) {
         node.render(self);
     }
 
@@ -60,10 +119,29 @@ impl<'a> UpdateCycle<'a> {
 
 }
 
-/// Defines a component which can be rendered by the scene.
-/// This only contains one function 'render' which should call the necessary functions on the scene in order for the component to render itself.
 pub trait RenderComponent {
+
+    type RenderPipeline;
+
+    fn render(&mut self, transform: render::RenderTransform, pipeline: &mut Self::RenderPipeline, render_core: &mut render::RenderCore);
+
+}
+
+pub trait Component {
+
+    fn update(&mut self, cycle: &mut UpdateCycle) {}
+
     fn render(&mut self, transform: Matrix4f, cycle: &mut RenderCycle);
+
+    /// Should return the geometry of this component.
+    /// There can be multiple geometry 'sections' for any physics component.
+    fn create_physics(&self, physics_world: &mut physics::World) -> PhysicsData {
+        return PhysicsData::none();
+    }
+
+    /// Updates the physics bodies of a component which manages physics.
+    fn update_physics(&mut self, physics_data: &mut PhysicsData, physics_world: &mut physics::World) {}
+
 }
 
 /// Defines a component which can be rendered in batch by the scene.
@@ -75,27 +153,10 @@ pub trait BatchRenderComponent {
 /// Defines a component which knows its own transform.
 /// This will be the case for nodes, since they have their own transforms defined by their position, rotation and scale.
 /// However, this trait can be implemented by things other than nodes, e.g. a World.
-pub trait RenderNode {
+pub trait ComponentNode {
+    fn update(&mut self, cycle: &mut UpdateCycle);
     fn render(&mut self, cycle: &mut RenderCycle);
-}
-
-impl<T> RenderNode for node::ContainerNode3D<T> where T: RenderComponent {
-    fn render(&mut self, cycle: &mut RenderCycle) {
-        self.component.render(self.node.get_trans(), cycle);
-    }
-}
-
-/// This trait defines standard update behaviour for a scene node.
-pub trait SceneComponent {
-
-    fn update(&mut self, node: &mut Node3D, scene: &mut Scene);
-
-}
-
-pub trait SceneNode {
-
-    fn update(&mut self, scene: &mut Scene);
-
+    fn update_physics(&mut self, physics_world: &mut physics::World);
 }
 
 /// The container struct for all the physics data of a node.
@@ -233,94 +294,49 @@ impl PhysicsBody {
 
 }
 
-/// Represents a physics node which contains its own physics data.
-pub trait PhysicsNode {
-
-    fn update_physics(&mut self, physics_world: &mut physics::World);
-
-}
-
-/// This trait defines a component which should respond to physics.
-pub trait PhysicsComponent {
-
-    /// Should return the geometry of this component.
-    /// There can be multiple geometry 'sections' for any physics component.
-    fn create_physics(&self, physics_world: &mut physics::World) -> PhysicsData;
-
-    /// Updates the physics bodies of a component which manages physics.
-    fn update_physics(&mut self, physics_data: &mut PhysicsData, physics_world: &mut physics::World);
-
-}
-
-pub struct Node<T> {
+pub struct Node<T: Component> {
     pub node: node::NodeObject3D,
     pub physics_data: PhysicsData,
     pub component: T,
 }
 
-impl<T> Node<T> {
+impl<T: Component> Node<T> {
 
     /// Creates a new node containing the specified instantiated component.
-    pub fn new(component: T) -> Self {
-        let node = node::NodeObject3D::new();
-        let physics_data = PhysicsData::none();
+    pub fn new(component: T, physics_world: &mut physics::World) -> Self {
+        let node: NodeObject3D = node::NodeObject3D::new();
+        let physics_data: PhysicsData = component.create_physics(physics_world);
         return Self { node, physics_data, component };
     }
 
 }
 
-impl<T> RenderNode for Node<T> where T : RenderComponent {
+impl<T: Component> ComponentNode for Node<T> {
+    fn update(&mut self, cycle: &mut UpdateCycle) {
+        self.component.update(cycle);
+    }
     fn render(&mut self, cycle: &mut RenderCycle) {
         self.component.render(self.node.get_trans(), cycle);
     }
-}
-
-impl<T> Node<T> where T : PhysicsComponent {
-
-    pub fn with_physics(component: T, physics_world: &mut physics::World) -> Self {
-        let node = node::NodeObject3D::new();
-        let physics_data = component.create_physics(physics_world);
-        return Self { node, physics_data, component };
-    }
-
-    pub fn create_physics(&mut self, physics_world: &mut physics::World) {
-        self.physics_data = self.component.create_physics(physics_world);
-    }
-}
-
-impl<T> PhysicsNode for Node<T> where T : PhysicsComponent {
     fn update_physics(&mut self, physics_world: &mut physics::World) {
-        //TODO: We need to be able to represent rotation as well as translation.
-        //TODO: Here we use the first body to get the transform.
-        if let Some(body) = self.physics_data.bodies.first() {
-            if let Some(pos) = body.get_pos(physics_world) {
-                self.node.set_pos(pos);
-            }
-        }
         self.component.update_physics(&mut self.physics_data, physics_world);
     }
 }
 
-impl<T> SceneNode for Node<T> where T : SceneComponent {
-    fn update(&mut self, scene: &mut Scene) {
-        self.component.update(&mut self.node, scene);
-    }
-}
-
-impl<T> Deref for Node<T> {
+impl<T: Component> Deref for Node<T> {
     type Target = T;
     fn deref(&self) -> &T {
         return &self.component;
     }
 }
 
-impl<T> DerefMut for Node<T> {
+impl<T: Component> DerefMut for Node<T> {
     fn deref_mut(&mut self) -> &mut T {
         return &mut self.component;
     }
 }
 
-impl<T> node::NodeImplementor3D for Node<T> {
+impl<T: Component> node::NodeImplementor3D for Node<T> {
 
     fn get_node_obj(&self) -> &NodeObject3D {
         return &self.node;
@@ -436,6 +452,20 @@ impl Camera {
 
 }
 
+impl scene::Camera for Camera {
+
+    fn camera_transform(&self) -> scene::CameraTransform {
+        return scene::CameraTransform::new(self.get_projection_matrix(), self.get_view_matrix());
+    }
+
+}
+
+impl scene::Component for Camera {
+    type Storage = scene::VecStorage<Self>;
+}
+
+impl scene::ComponentOf<Spatial> for Camera {}
+
 impl node::NodeImplementor3D for Camera {
 
     fn get_node_obj(&self) -> &node::NodeObject3D {
@@ -520,14 +550,8 @@ impl Scene {
     pub fn render_mesh_batch(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transforms: &[render::RenderTransform], graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
         self.mesh_pipeline.render_batch(vertex_input, texture_set, transforms, graphics, encoder);
     }
-
-    /// Updates a standard scene node.
-    pub fn update_node(&mut self, node: &mut SceneNode) {
-        node.update(self);
-    }
-
     /// Updates the physics node.
-    pub fn update_physics(&mut self, physics_node: &mut PhysicsNode) {
+    pub fn update_physics(&mut self, physics_node: &mut ComponentNode) {
         physics_node.update_physics(&mut self.physics_world);
     }
 

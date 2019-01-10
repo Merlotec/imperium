@@ -10,6 +10,7 @@ pub extern crate gfx_hal as gfx;
 pub extern crate assimp_sys as ai;
 pub extern crate libc;
 extern crate cgmath;
+pub extern crate specs;
 
 #[macro_use]
 pub mod core;
@@ -25,6 +26,8 @@ pub mod texture;
 
 pub mod component;
 pub mod spatial;
+
+pub mod scene;
 
 pub mod input;
 

@@ -67,9 +67,9 @@ impl CommandDispatch {
                 vec![&self.present_semaphore],
             );
         if result.is_err() {
-            return true;
+            return false;
         }
-        return false;
+        return true;
     }
 
 }

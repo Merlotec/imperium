@@ -77,7 +77,7 @@ impl Texture {
 
     }
 
-    pub fn from_path(path: &str) -> Result<Texture, &'static str> {
+    pub fn from_file(path: &str) -> Result<Texture, &'static str> {
         if let Ok(image) = image::open(path) {
             let img = image.to_rgba();
             let (width, height) = img.dimensions();
