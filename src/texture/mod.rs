@@ -40,9 +40,9 @@ impl UvVertex2f {
 
         return [
             UvVertex2f::new(Vector2f::new(rect.x, rect.y), Vector2f::new(0.0, 0.0)),
-            UvVertex2f::new(Vector2f::new(rect.x + rect.width, rect.y), Vector2f::new(1.0, 0.0)),
-            UvVertex2f::new(Vector2f::new(rect.x + rect.width, rect.y + rect.height), Vector2f::new(1.0, 1.0)),
-            UvVertex2f::new(Vector2f::new(rect.x, rect.y + rect.height), Vector2f::new(0.0, 1.0)),
+            UvVertex2f::new(Vector2f::new(rect.x + rect.width, rect.y), Vector2f::new(0.0, 0.0)),
+            UvVertex2f::new(Vector2f::new(rect.x + rect.width, rect.y + rect.height), Vector2f::new(0.0, 0.0)),
+            UvVertex2f::new(Vector2f::new(rect.x, rect.y + rect.height), Vector2f::new(0.0, 0.0)),
         ]
 
     }
@@ -61,7 +61,7 @@ impl Texture {
 
     pub fn new() -> Texture {
 
-        return Texture { data: vec![0, 0, 0, 0], dimensions: Vector2u::new(2, 2) };
+        return Texture { data: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], dimensions: Vector2u::new(2, 2) };
 
     }
 
@@ -73,7 +73,7 @@ impl Texture {
 
     pub fn from_image(image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) -> Texture {
 
-        return Texture::from_bytes(image.as_ref(), Vector2u::new(image.dimensions().0, image.dimensions().1));
+        return Texture::from_bytes(image.as_ref(), Vector2u::new(image.dimensions().0, image.dimensions().0));
 
     }
 

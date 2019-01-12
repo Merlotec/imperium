@@ -2,6 +2,8 @@ use crate::*;
 // Import specs here and expose through this module.
 pub use specs::prelude::*;
 
+use node::Node;
+
 use std::mem;
 
 /// This marker trait should be implemented by an `Aggregator` to show that component `C` is implemented intrinsically by the aggregator.
@@ -26,7 +28,7 @@ impl<A: Aggregator, C: ComponentOf<A>> PrimaryEntity<A, C> {
 }
 
 pub trait Camera {
-    fn camera_transform(&self) -> CameraTransform;
+    fn camera_transform(&self, node: &Node) -> CameraTransform;
 }
 
 #[derive(Copy, Clone)]
@@ -38,6 +40,9 @@ pub struct CameraTransform {
 impl CameraTransform {
     pub fn new(projection: Matrix4f, view: Matrix4f) -> Self {
         return Self { projection, view };
+    }
+    pub fn camera_matrix(&self) -> Matrix4f {
+        return self.view.inverse_transform().log_expect("MATRIX ERROR");
     }
 }
 
@@ -54,6 +59,8 @@ impl SceneData {
 pub trait Aggregator {
 
     type Camera: Camera + ComponentOf<Self> + Sized;
+
+    type Node: Node + ComponentOf<Self>;
 
     /// Add default components to entity.
     fn build_entity(mut entity_builder: EntityBuilder) -> Entity where Self : Sized;
@@ -73,7 +80,9 @@ pub struct Scene<'a, 'b : 'a, A: Aggregator> {
     pub dispatcher: Dispatcher<'a, 'b>,
 }
 
-impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A> where <<A as scene::Aggregator>::Camera as specs::Component>::Storage: std::default::Default {
+impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A>
+    where <<A as scene::Aggregator>::Camera as specs::Component>::Storage: std::default::Default,
+          <<A as scene::Aggregator>::Node as specs::Component>::Storage: std::default::Default {
 
     /// Creates a new scene with all the systems registered.
     pub fn create(mut aggregator: A, renderer: &mut render::Renderer) -> Self  {
@@ -91,6 +100,7 @@ impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A> where <<A as scene::Aggregator
         world.add_resource(SceneData::new());
         world.add_resource::<Option<render::RenderCoreUnsafe>>(None);
         world.register::<A::Camera>();
+        world.register::<A::Node>();
     }
 
     pub fn create_primary_entity<C: ComponentOf<A>>(&mut self, component: C) -> PrimaryEntity<A, C> {
@@ -106,15 +116,16 @@ impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A> where <<A as scene::Aggregator
     pub fn update_scene_data(&self) {
         // Get updated camera data.
         let camera_fetch = self.world.read_storage::<A::Camera>();
+        let node_fetch = self.world.read_storage::<A::Node>();
         // We use the last camera as the active one.
-        for camera_component in (&camera_fetch).join() {
-            let camera_transform = camera_component.camera_transform();
-            self.get_scene_data().camera_transform = camera_component.camera_transform();
+        for (node_component, camera_component) in (&node_fetch, &camera_fetch).join() {
+            let camera_transform = camera_component.camera_transform(node_component);
+            self.get_scene_data().camera_transform = camera_transform;
         }
     }
 
     /// Dispatches all the systems in the scene which will cause the scene to be updated and rendered.
-    pub fn dispatch_systems(&mut self, graphics: &mut render::Graphics, encoder: &mut command::Encoder, events: &mut Vec<window::Event>, delta: f32) {
+    pub fn dispatch_systems(&mut self, graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
         self.update_scene_data();
         self.aggregator.update(&mut self.world);
         let render_core_unsafe: render::RenderCoreUnsafe = render::RenderCoreUnsafe::new(graphics, encoder);
@@ -127,29 +138,6 @@ impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A> where <<A as scene::Aggregator
         // Invalidate renderer to ensure no unsafe uses.
         let mut render_resource_live = self.world.write_resource::<Option<render::RenderCoreUnsafe>>();
         render_resource_live.take();
-    }
-
-    /// Runs the application using the current scene.
-    pub fn run(mut self, imperium: &mut core::Imperium) {
-        let mut inst = std::time::Instant::now();
-        // Main loop.
-        'l: loop {
-            let delta: f32 = {
-                let dur = inst.elapsed();
-                let secs = dur.as_secs() as f32;
-                let subsecs = dur.subsec_millis() as f32 / 1000.0;
-                secs + subsecs
-            };
-            imperium.update();
-            let mut events: Vec<window::Event> = imperium.poll_events();
-            imperium.render(| graphics, encoder |{
-                self.dispatch_systems(graphics, encoder, &mut events, delta);
-            });
-            if imperium.should_terminate {
-                break;
-            }
-
-        }
     }
 
 }

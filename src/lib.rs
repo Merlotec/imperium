@@ -1,3 +1,6 @@
+#![feature(copy_within)]
+#![feature(duration_float)]
+
 //#[cfg(windows)]
 //pub extern crate gfx_backend_dx12 as backend;
 //#[cfg(target_os = "macos")]
@@ -12,27 +15,28 @@ pub extern crate libc;
 extern crate cgmath;
 pub extern crate specs;
 
+pub mod types;
+pub use types::*;
+
 #[macro_use]
 pub mod core;
 pub mod render;
-pub mod window;
-pub mod buffer;
 pub mod command;
 pub mod pipeline;
+pub mod window;
+pub mod buffer;
+pub mod texture;
+pub mod input;
+
 pub mod node;
 pub mod physics;
 
-pub mod texture;
-
-pub mod component;
-pub mod spatial;
-
 pub mod scene;
 
-pub mod input;
+pub mod spatial;
 
-pub mod types;
+pub mod script;
 
-pub use types::*;
+pub mod app;
 
 pub use core::LogExpect;

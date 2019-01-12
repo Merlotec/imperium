@@ -1,9 +1,19 @@
 use crate::*;
 
 use std::marker::PhantomData;
+use std::sync::Arc;
+use std::ops::Deref;
 
 use gfx::Device as GfxDevice;
 use gfx::PhysicalDevice;
+
+pub trait BufferInterface : Send + Sync {
+    fn raw_buffer(&self) -> &Buffer;
+}
+
+/// A buffer that can be shared between pipelines, resources or components.
+/// For example, a `lights` buffer may be a `SharedBuffer` as it needs to be shared between all the pipelines.
+pub type SharedBuffer = Arc<Buffer>;
 
 /// This structure represents a GPU buffer which contains memory of a specific type.
 /// This holds both the buffer object and the buffer memory.
@@ -19,15 +29,19 @@ pub struct Buffer {
 
 impl Buffer {
 
-    pub fn create_vertex<T: std::marker::Copy>(slice: &[T], device: &core::Device) -> Self {
-        return Self::create(slice, gfx::buffer::Usage::VERTEX, gfx::memory::Properties::CPU_VISIBLE, device);
+    pub fn alloc_vertex<T: std::marker::Copy>(slice: &[T], device: &core::Device) -> Self {
+        return Self::alloc(slice, gfx::buffer::Usage::VERTEX, gfx::memory::Properties::CPU_VISIBLE, device);
     }
 
-    pub fn create_uniform<T: std::marker::Copy>(slice: &[T], device: &core::Device) -> Self {
-        return Self::create(slice, gfx::buffer::Usage::UNIFORM, gfx::memory::Properties::CPU_VISIBLE, device);
+    pub fn alloc_uniform<T: std::marker::Copy>(slice: &[T], device: &core::Device) -> Self {
+        return Self::alloc(slice, gfx::buffer::Usage::UNIFORM, gfx::memory::Properties::CPU_VISIBLE, device);
     }
 
-    pub fn create<T: std::marker::Copy>(slice: &[T], usage: gfx::buffer::Usage, properties: gfx::memory::Properties, device: &core::Device) -> Self {
+    pub fn alloc_uniform_empty<T: std::marker::Copy>(count: usize, device: &core::Device) -> Self {
+        return Self::alloc_empty::<T>(count, gfx::buffer::Usage::UNIFORM, gfx::memory::Properties::CPU_VISIBLE, device);
+    }
+
+    pub fn alloc<T: std::marker::Copy>(slice: &[T], usage: gfx::buffer::Usage, properties: gfx::memory::Properties, device: &core::Device) -> Self {
         let memory_types = device.adapter.physical_device.memory_properties().memory_types;
 
         let stride = std::mem::size_of::<T>() as u64;
@@ -56,7 +70,7 @@ impl Buffer {
         return Self { buf: buffer, memory: buffer_memory, count: slice.len(), device_token: device.create_token() };
     }
 
-    pub fn create_empty<T: std::marker::Copy>(count: usize, usage: gfx::buffer::Usage, properties: gfx::memory::Properties, device: &core::Device) -> Self {
+    pub fn alloc_empty<T: std::marker::Copy>(count: usize, usage: gfx::buffer::Usage, properties: gfx::memory::Properties, device: &core::Device) -> Self {
 
         let memory_types = device.adapter.physical_device.memory_properties().memory_types;
 
@@ -85,7 +99,6 @@ impl Buffer {
         let stride = std::mem::size_of::<T>() as u64;
         let buffer_len = data.len() as u64 * stride;
         let mut dest = device.device.acquire_mapping_writer::<T>(&self.memory, 0..buffer_len).unwrap();
-
         dest.copy_from_slice(data);
 
         device.device.release_mapping_writer(dest);
@@ -101,6 +114,23 @@ impl std::ops::Drop for Buffer {
             self.device_token.device.destroy_buffer(mem::transmute_copy(&mut self.buf));
             self.device_token.device.free_memory(mem::transmute_copy(&mut self.memory));
         }
+    }
+
+}
+
+impl BufferInterface for Buffer {
+    fn raw_buffer(&self) -> &Buffer {
+        return self;
+    }
+}
+
+impl pipeline::ShaderInput for Buffer {
+
+    fn get_descriptor(&self) -> Option<gfx::pso::Descriptor<Backend>> {
+        return Some(gfx::pso::Descriptor::Buffer(&self.buf, None..None));
+    }
+    fn get_binding_type(&self) -> gfx::pso::DescriptorType {
+        return gfx::pso::DescriptorType::UniformBuffer;
     }
 
 }
@@ -190,7 +220,7 @@ impl TextureBuffer {
                     (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
                 let upload_size = u64::from(height * row_pitch);
 
-                let upload_buffer = Buffer::create_empty::<u8>(
+                let upload_buffer = Buffer::alloc_empty::<u8>(
                     upload_size as usize,
                     gfx::buffer::Usage::TRANSFER_SRC,
                     gfx::memory::Properties::CPU_VISIBLE,

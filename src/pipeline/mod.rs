@@ -93,48 +93,38 @@ pub enum ShaderStage {
 
 }
 
-pub struct DescriptorBinding {
-
-    pub ty: gfx::pso::DescriptorType,
-    pub binding: u32,
-
-}
-
-impl DescriptorBinding {
-
-    pub fn new(ty: gfx::pso::DescriptorType, binding: u32) -> DescriptorBinding {
-        return DescriptorBinding { ty, binding };
-    }
-
-}
-
 pub struct DescriptorSetLayout {
 
     pub set_layout: <Backend as gfx::Backend>::DescriptorSetLayout,
-    pub bindings: Vec<DescriptorBinding>,
+    pub bindings: Vec<gfx::pso::DescriptorType>,
 
 }
 
 impl DescriptorSetLayout {
 
-    pub fn create(inputs: &[(&ShaderInput, ShaderStage, u32)], device: &core::Device) -> DescriptorSetLayout {
+    /// There must be the same number of shader inputs specified as in the actual descriptor set in the shader.
+    /// If the data is not yet initialized, this can easily be specified - all that matters is the correct layout data is supplied.
+    pub fn create(inputs: &[(&ShaderInput, ShaderStage)], device: &core::Device) -> DescriptorSetLayout {
         let mut binding_data: Vec<_> = Vec::with_capacity(inputs.len());
-        let mut bindings: Vec<DescriptorBinding> = Vec::with_capacity(inputs.len());
+        let mut bindings: Vec<gfx::pso::DescriptorType> = Vec::with_capacity(inputs.len());
+
+        let mut i = 0;
 
         for input in inputs.iter() {
             let binding_type = input.0.get_binding_type();
-            bindings.push(DescriptorBinding::new(binding_type, input.2));
+            bindings.push(binding_type);
             let stage_flags = match input.1 {
                 ShaderStage::Vertex => gfx::pso::ShaderStageFlags::VERTEX,
                 ShaderStage::Fragment => gfx::pso::ShaderStageFlags::FRAGMENT,
             };
             binding_data.push(gfx::pso::DescriptorSetLayoutBinding {
-                binding: input.2,
+                binding: i,
                 ty: binding_type,
                 count: 1,
                 stage_flags,
                 immutable_samplers: false,
             });
+            i += 1;
         }
 
         // TODO: what is a descriptor set, what is the layout?
@@ -160,7 +150,7 @@ impl DescriptorPool {
         for input_layout in input_layouts {
             for binding in input_layout.0.bindings.iter() {
                 desc_ranges.push(gfx::pso::DescriptorRangeDesc {
-                    ty: binding.ty,
+                    ty: *binding,
                     count: input_layout.1,
                 });
             }
@@ -181,7 +171,6 @@ impl DescriptorPool {
 pub struct DescriptorSet {
 
     pub desc_set: <Backend as gfx::Backend>::DescriptorSet,
-    pub bindings: Vec<u32>,
 
 }
 
@@ -189,46 +178,30 @@ impl DescriptorSet {
 
     /// Creates a new descriptor set object.
     /// The layout of the set needs to be provided in order to create the actual descriptor set.
-    pub fn new(input_layout: &DescriptorSetLayout, descriptor_pool: &mut DescriptorPool, device: &core::Device) -> DescriptorSet {
+    pub fn new(input_layout: &DescriptorSetLayout, descriptor_pool: &mut DescriptorPool, device: &core::Device) -> Result<DescriptorSet, &'static str> {
 
-        let mut bindings: Vec<u32> = Vec::with_capacity(input_layout.bindings.len());
-
-        for binding in input_layout.bindings.iter() {
-            bindings.push(binding.binding);
+        if let Ok(desc_set) = descriptor_pool.pool.allocate_set(&input_layout.set_layout) {
+            return Ok(DescriptorSet { desc_set });
+        } else {
+             return Err("Failed to create descriptor set. Perhaps the descriptor pool was not initialized properly?");
         }
-
-        let desc_set = descriptor_pool.pool.allocate_set(&input_layout.set_layout).log_expect("Failed to create descriptor set. Perhaps the descriptor pool was not initialized properly?");
-
-        return DescriptorSet { desc_set, bindings };
 
     }
 
-    /// The index specified as the second component of the tuple should be relative to the DescriptorSetLayout.
-    /// For example, if a descriptor was added to the DescriptorSetLayout which was at binding 5 of the shader, it would be referenced as index 0.
-    /// If another descriptor was added to the DescriptorSetLayout which was at binding 3 of the shader, it would be referenced as index 1 as it is the second object added.
-    /// This makes it easier when the shader layout is not known, but it means that this index must be less than the number of elements in the DescriptorSetLayout object.
-    pub fn create(inputs: &[(&ShaderInput, usize)], input_layout: &DescriptorSetLayout, descriptor_pool: &mut DescriptorPool, device: &core::Device) -> DescriptorSet {
+    /// The inputs specified should have their corresponding bindings as the second argument of the tuple. This means that not all the inputs need to be initialized.
+    pub fn with_inputs(inputs: &[(&ShaderInput, u32)], input_layout: &DescriptorSetLayout, descriptor_pool: &mut DescriptorPool, device: &core::Device) -> Result<DescriptorSet, &'static str> {
 
-        let mut bindings: Vec<u32> = Vec::with_capacity(input_layout.bindings.len());
-
-        for binding in input_layout.bindings.iter() {
-            bindings.push(binding.binding);
-        }
-        // TODO: explain
-
-        let desc_set = descriptor_pool.pool.allocate_set(&input_layout.set_layout).log_expect("Failed to create descriptor set. Perhaps the descriptor pool was not initialized properly?");
-
+        let mut descriptor_set: DescriptorSet = Self::new(input_layout, descriptor_pool, device)?;
         {
             let mut writes: Vec<_> = Vec::with_capacity(inputs.len());
 
             for input in inputs.iter() {
-                if input.0.get_descriptor().is_some() {
-                    let binding = input_layout.bindings[input.1].binding;
+                if let Some(descriptor) = input.0.get_descriptor() {
                     writes.push(gfx::pso::DescriptorSetWrite {
-                        set: &desc_set,
-                        binding,
+                        set: &descriptor_set.desc_set,
+                        binding: input.1,
                         array_offset: 0,
-                        descriptors: input.0.get_descriptor(),
+                        descriptors: Some(descriptor),
                     });
                 }
             }
@@ -236,29 +209,45 @@ impl DescriptorSet {
             device.device.write_descriptor_sets(writes);
         }
 
-        return DescriptorSet { desc_set, bindings };
+        return Ok(descriptor_set);
+    }
+
+    pub fn write_inputs(&mut self, inputs: &[(&ShaderInput, u32)], device: &core::Device) {
+        let mut writes: Vec<_> = Vec::with_capacity(inputs.len());
+        for input in inputs.iter() {
+            if let Some(descriptor) = input.0.get_descriptor() {
+                writes.push(gfx::pso::DescriptorSetWrite {
+                    set: &self.desc_set,
+                    binding: input.1,
+                    array_offset: 0,
+                    descriptors: Some(descriptor),
+                });
+            }
+        }
+
+        device.device.write_descriptor_sets(writes);
     }
 
     pub fn bind(&self, pipeline_layout: &<Backend as gfx::Backend>::PipelineLayout, encoder: &mut command::Encoder) {
         encoder.pass.bind_graphics_descriptor_sets(&pipeline_layout, 0, vec![&self.desc_set], &[]);
     }
 
-    pub fn write_descriptor(&self, descriptor: Option<gfx::pso::Descriptor<Backend>>, index: usize, device: &core::Device) {
+    pub fn write_descriptor(&self, descriptor: Option<gfx::pso::Descriptor<Backend>>, binding: u32, device: &core::Device) {
         device.device.write_descriptor_sets(vec![
             gfx::pso::DescriptorSetWrite {
                 set: &self.desc_set,
-                binding: self.bindings[index],
+                binding,
                 array_offset: 0,
                 descriptors: descriptor,
             }
         ]);
     }
 
-    pub fn write_input(&self, shader_input: &ShaderInput, index: usize, device: &core::Device) {
+    pub fn write_input(&self, shader_input: &ShaderInput, binding: u32, device: &core::Device) {
         device.device.write_descriptor_sets(vec![
             gfx::pso::DescriptorSetWrite {
                 set: &self.desc_set,
-                binding: self.bindings[index],
+                binding,
                 array_offset: 0,
                 descriptors: shader_input.get_descriptor(),
             }
@@ -284,12 +273,12 @@ impl DescriptorSetInterface {
         self.set.bind(pipeline_layout, encoder);
     }
 
-    pub fn write_descriptor(&self, descriptor: Option<gfx::pso::Descriptor<Backend>>, index: usize, device: &core::Device) {
-        self.set.write_descriptor(descriptor, index, device);
+    pub fn write_descriptor(&self, descriptor: Option<gfx::pso::Descriptor<Backend>>, binding: u32, device: &core::Device) {
+        self.set.write_descriptor(descriptor, binding, device);
     }
 
-    pub fn write_input(&self, shader_input: &ShaderInput, index: usize, device: &core::Device) {
-        self.set.write_input(shader_input, index, device);
+    pub fn write_input(&self, shader_input: &ShaderInput, binding: u32, device: &core::Device) {
+        self.set.write_input(shader_input, binding, device);
     }
 
 }
@@ -335,43 +324,13 @@ impl ShaderInputDescriptor {
 
 }
 
-impl ShaderInput for ShaderInputDescriptor{
+impl ShaderInput for ShaderInputDescriptor {
 
     fn get_descriptor(&self) -> Option<gfx::pso::Descriptor<Backend>> {
         return None;
     }
     fn get_binding_type(&self) -> gfx::pso::DescriptorType {
         return self.binding_type;
-    }
-
-}
-
-pub struct Uniform {
-
-    pub buffer: buffer::Buffer,
-
-}
-
-impl Uniform {
-
-    pub fn create<T: Copy>(data: &[T], device: &core::Device) -> Uniform {
-        let buffer = buffer::Buffer::create_uniform(data, device);
-        return Uniform { buffer };
-    }
-
-    pub fn upload_data<T: Copy>(&self, data: &[T], device: &core::Device) {
-        self.buffer.fill_buffer(data, device);
-    }
-
-}
-
-impl ShaderInput for Uniform {
-
-    fn get_descriptor(&self) -> Option<gfx::pso::Descriptor<Backend>> {
-        return Some(gfx::pso::Descriptor::Buffer(&self.buffer.buf, None..None));
-    }
-    fn get_binding_type(&self) -> gfx::pso::DescriptorType {
-        return gfx::pso::DescriptorType::UniformBuffer;
     }
 
 }

@@ -13,7 +13,7 @@ use spatial::pipe::mesh::MeshRenderPipeline;
 /// The basic component which can render a mesh to the screen.
 /// This contains vertex buffer data as well as texture data.
 /// It has the capability to use index buffers but currently meshes loaded from files do not contain index buffers.
-pub struct MeshComponent {
+pub struct BufferedMesh {
 
     /// The vertex buffer object which contains vertex information.
     /// It is contained within a 'Resource' structure.
@@ -30,44 +30,52 @@ pub struct MeshComponent {
 
 }
 
-impl MeshComponent {
+impl BufferedMesh {
 
     /// Creates a enw mesh component from a mesh object.
     /// This mesh can be loaded from a model file.
-    pub fn new(mesh: &Mesh, texture: &texture::Texture, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> MeshComponent {
-        return MeshComponent::create(&mesh.vertices, None, texture, pipeline, renderer);
+    pub fn new(mesh: &Mesh, texture: &texture::Texture, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> BufferedMesh {
+        return BufferedMesh::create(&mesh.vertices, None, texture, pipeline, renderer);
     }
 
     /// Creates a new mesh component from the specified raw vertex buffer, index buffer and texture.
     /// The scene and render objects are required in order to load the mesh properly.
-    pub fn create(verts: &[ModelVertex], indices: Option<&[u32]>, texture: &texture::Texture, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> MeshComponent {
-        let vertex_buffer: Res<buffer::Buffer> = Res::Val(buffer::Buffer::create_vertex(verts, &renderer.graphics.device));
+    pub fn create(verts: &[ModelVertex], indices: Option<&[u32]>, texture: &texture::Texture, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> BufferedMesh {
+        let vertex_buffer: Res<buffer::Buffer> = Res::Val(buffer::Buffer::alloc_vertex(verts, &renderer.graphics.device));
         let mut index_buffer: Option<Res<buffer::Buffer>> = None;
         if let Some(indices) = indices {
-            index_buffer = Some(Res::Val(buffer::Buffer::create(indices, gfx::buffer::Usage::INDEX, gfx::memory::Properties::CPU_VISIBLE, &renderer.graphics.device)));
+            index_buffer = Some(Res::Val(buffer::Buffer::alloc(indices, gfx::buffer::Usage::INDEX, gfx::memory::Properties::CPU_VISIBLE, &renderer.graphics.device)));
         }
         let texture_buffer: Res<buffer::TextureBuffer> = Res::Val(buffer::TextureBuffer::create(&texture, &mut renderer.graphics.device, &mut renderer.command_dispatch));
         let texture_sampler = pipeline::TextureSampler::new(&renderer.graphics.device);
-        let texture_input_set: pipeline::DescriptorSet = pipeline::DescriptorSet::create(&[
+        // We do not supply a material buffer by default, however we do ensure that the shader knows that there are no materials.
+        // The fist byte is the array size counter.
+        let material_buffer: buffer::Buffer = buffer::Buffer::alloc_uniform(&[0i32], &mut renderer.graphics.device);
+        let texture_input_set: pipeline::DescriptorSet = pipeline::DescriptorSet::with_inputs(&[
             (texture_buffer.as_ref(), 0),
-            (&texture_sampler, 1)
-        ], &pipeline.texture_input_desc, &mut pipeline.descriptor_pool, &renderer.graphics.device);
-        return MeshComponent { vertex_buffer, index_buffer, texture_buffer, texture_input_set };
+            (&texture_sampler, 1),
+            (&material_buffer, 2),
+        ], &pipeline.texture_input_desc, &mut pipeline.descriptor_pool, &renderer.graphics.device).log_expect("Failed to create texture descriptor set for mesh component.");
+        return BufferedMesh { vertex_buffer, index_buffer, texture_buffer, texture_input_set };
     }
 
-    /// Creates a new MeshComponent from the specified vertex buffer, index buffer and texture buffer.
+    pub fn set_material_input(&self, input: &pipeline::ShaderInput, device: &core::Device) {
+        self.texture_input_set.write_input(input, 2, device);
+    }
+
+    /// Creates a new BufferedMesh from the specified vertex buffer, index buffer and texture buffer.
     /// The scene and renderer object are needed to create the descriptor set that properly represents the scene.
     pub fn from_raw_buffers(vertex_buffer: Res<buffer::Buffer>, index_buffer: Option<Res<buffer::Buffer>>, texture_buffer: Res<buffer::TextureBuffer>, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> Self {
         let texture_sampler = pipeline::TextureSampler::new(&renderer.graphics.device);;
-        let texture_input_set: pipeline::DescriptorSet = pipeline::DescriptorSet::create(&[
+        let texture_input_set: pipeline::DescriptorSet = pipeline::DescriptorSet::with_inputs(&[
             (texture_buffer.as_ref(), 0),
             (&texture_sampler, 1)
-        ], &pipeline.texture_input_desc, &mut pipeline.descriptor_pool, &renderer.graphics.device);
-        return MeshComponent { vertex_buffer, index_buffer, texture_buffer, texture_input_set };
+        ], &pipeline.texture_input_desc, &mut pipeline.descriptor_pool, &renderer.graphics.device).log_expect("Failed to create texture descriptor set for mesh component.");
+        return BufferedMesh { vertex_buffer, index_buffer, texture_buffer, texture_input_set };
     }
 }
 
-impl spatial::RenderComponent for MeshComponent {
+impl spatial::RenderComponent for BufferedMesh {
 
     type RenderPipeline = spatial::pipe::mesh::MeshRenderPipeline;
 
@@ -85,29 +93,14 @@ impl spatial::RenderComponent for MeshComponent {
 
 }
 
-impl specs::Component for MeshComponent {
+impl specs::Component for BufferedMesh {
     type Storage = specs::VecStorage<Self>;
 }
 
-impl scene::ComponentOf<spatial::Spatial> for MeshComponent {}
+impl scene::ComponentOf<spatial::Spatial> for BufferedMesh {}
 
-impl spatial::Component for MeshComponent {
-
-    fn render(&mut self, transform: Matrix4f, cycle: &mut spatial::RenderCycle) {
-        let transform: render::RenderTransform = render::RenderTransform::new(transform, cycle.scene.camera.get_view_matrix(), cycle.scene.camera.get_projection_matrix());
-        let index_buffer: Option<&buffer::Buffer> = {
-            if let Some(ibuf) = self.index_buffer.as_ref() {
-                Some(ibuf.as_ref())
-            } else {
-                None
-            }
-        };
-        let vertex_input = pipeline::VertexInput { vertex_buffer: &self.vertex_buffer, index_buffer };
-        cycle.scene.render_mesh(&vertex_input, &self.texture_input_set, transform, cycle.graphics, cycle.encoder);
-    }
-}
-
-impl spatial::BatchRenderComponent for MeshComponent {
+/*
+impl spatial::BatchRenderComponent for BufferedMesh {
 
     fn render_batch(&mut self, transforms: &[Matrix4f], cycle: &mut spatial::RenderCycle) {
 
@@ -128,7 +121,7 @@ impl spatial::BatchRenderComponent for MeshComponent {
     }
 
 }
-
+*/
 
 pub trait FromAiVec3f {
 
@@ -187,18 +180,20 @@ pub struct ModelVertex {
     pub uv: Vector2f,
     pub bone_ids: Vector4i,
     pub bone_weights: Vector4f,
+    pub material_index: i32,
 
 }
 
 impl ModelVertex {
 
-    pub fn new(pos: Vector3f, normal: Vector3f, uv: Vector2f) -> ModelVertex {
+    pub fn new(pos: Vector3f, normal: Vector3f, uv: Vector2f, material_index: i32) -> ModelVertex {
         return ModelVertex {
             pos,
             normal,
             uv,
             bone_ids: Vector4i::new(-1, -1, -1, -1),
             bone_weights: Vector4f::zero(),
+            material_index
         };
     }
 
@@ -260,7 +255,7 @@ impl Mesh {
             }
 
             // Construt and push the ModelVertex.
-            vertices.push(ModelVertex::new(pos, normal, uv));
+            vertices.push(ModelVertex::new(pos, normal, uv, -1));
         }
 
         let mut indices: Vec<u16> = Vec::with_capacity((*ai_mesh).num_faces as usize);

@@ -6,6 +6,8 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::collections::hash_map::DefaultHasher;
 use std::mem;
 use std::ptr;
@@ -54,6 +56,43 @@ impl ToVec2f for Vector3f {
 }
 
 #[derive(Copy, Clone)]
+pub struct OpaqueColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+}
+
+impl OpaqueColor {
+    pub fn new(r: f32, g: f32, b: f32) -> Self {
+        return Self { r, g, b };
+    }
+    pub fn black() -> Self {
+        return Self { r: 0.0, g: 0.0, b: 0.0 }
+    }
+    pub fn white() -> Self {
+        return Self { r: 1.0, g: 1.0, b: 1.0 }
+    }
+    pub fn red() -> Self {
+        return Self { r: 1.0, g: 0.0, b: 0.0 }
+    }
+    pub fn green() -> Self {
+        return Self { r: 0.0, g: 1.0, b: 0.0 }
+    }
+    pub fn blue() -> Self {
+        return Self { r: 0.0, g: 0.0, b: 1.0 }
+    }
+    pub fn yellow() -> Self {
+        return Self { r: 1.0, g: 1.0, b: 0.0 }
+    }
+}
+
+impl From<Color> for OpaqueColor {
+    fn from(other: Color) -> Self {
+        return Self::new(other.r, other.g, other.b);
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct Color {
 
     pub r: f32,
@@ -96,6 +135,12 @@ impl Color {
         return [self.r, self.g, self.b, self.a];
     }
 
+}
+
+impl From<OpaqueColor> for Color {
+    fn from(other: OpaqueColor) -> Self {
+        return Self::new(other.r, other.g, other.b, 1.0);
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -567,4 +612,32 @@ impl PartialEq for Id {
         return self.0 == other.0;
     }
 
+}
+
+impl Eq for Id {}
+
+#[derive(Copy, Clone)]
+#[repr(align(16))]
+#[repr(C)]
+pub struct Al16<T>(pub T);
+
+impl<T> Al16<T> {
+
+    pub fn new(val: T) -> Self {
+        return Al16(val);
+    }
+
+}
+
+impl<T> Deref for Al16<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        return &self.0;
+    }
+}
+
+impl<T> DerefMut for Al16<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        return &mut self.0;
+    }
 }

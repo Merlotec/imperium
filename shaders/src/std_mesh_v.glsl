@@ -20,9 +20,10 @@
 
    layout(location = 0) in vec3 position;
    layout(location = 1) in vec3 normal;
-   layout(location = 2) in vec2 uv_Pos;
+   layout(location = 2) in vec2 uv_pos;
    layout(location = 3) in ivec4 bone_ids;
    layout(location = 4) in vec4 bone_weights;
+   layout(location = 5) in int v_material_index;
 
    layout(push_constant) uniform Transform {
        mat4 model;
@@ -35,9 +36,13 @@
 
    layout(location = 0) out vec2 uv;
    layout(location = 1) out vec3 norm;
+   layout(location = 2) out vec3 frag_pos;
+   layout(location = 3) out vec3 view_pos;
+   layout(location = 4) out flat int material_index;
+
+   layout(location = 5) out flat mat4 view_matrix;
 
    void main() {
-       uv = uv_Pos;
 
        mat4 bone_transform = mat4(1.0);
        for (int i = 0; i < BONES_PER_VERTEX; i++) {
@@ -53,16 +58,19 @@
 
        //mat4 local_transform = bone_transform;
        mat4 local_transform = model;
-
        mat4 camera_transform = projection * view;
-
-       vec4 norm_calc = local_transform * vec4(normal, 0.0);
-       norm = norm_calc.xyz;
-
        vec4 pos = camera_transform * local_transform * vec4(position, 1.0);
-
        float zpos = (pos.z / MAXZ) * MAX_REL_Z;
       // gl_Position = vec4(pos.xy, zpos, pos.w);
       gl_Position = pos;
+
+      uv = uv_pos;
+      norm = vec3(local_transform * vec4(normal, 0.0));
+      frag_pos = vec3(local_transform * vec4(position, 1.0));
+      mat4 camera = inverse(view);
+      view_pos = vec3(camera[3][0], camera[3][1], camera[3][2]);
+      material_index = v_material_index;
+
+      view_matrix = view;
 
    }

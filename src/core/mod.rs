@@ -15,8 +15,8 @@ use gfx::DescriptorPool;
 
 use self::colored::{Color as PrintColor, Colorize as PrintColorize, ColoredString as PrintColoredString};
 
-/// This trait defines the core Imperium drawing abstraction.
-/// The Imperium engine can be used by passing a single 'Component' implementing object to the engine object.
+/// This trait defines the core Instance drawing abstraction.
+/// The Instance engine can be used by passing a single 'Component' implementing object to the engine object.
 /// In most cases, the rendering method used (e.g. Scene2D, Scene3D) will implement this for the programmer.
 /// These abstractions use there own methods of rendering their individual components.
 /// This allows for modularity as every rendering method can pass its own arguments to it's components and are not restricted to what is defined in this trait.
@@ -53,79 +53,9 @@ impl Instance {
 
     /// Creates a new instance object with the specified application name.
     /// The name of the application is backend specific and may map to different things.
-    pub fn create(application_name: & str) -> Instance {
+    pub fn create(application_name: & str) -> Self {
         let gfx_inst = Arc::new(backend::Instance::create(application_name, 1));
-        return Instance { gfx_inst };
-    }
-
-}
-
-/// The
-pub struct Imperium {
-
-    pub instance: Instance,
-    pub window: window::Window,
-    pub renderer: render::Renderer,
-
-    pub clear_color: Color,
-
-    pub should_terminate: bool,
-
-}
-
-impl Imperium {
-
-    pub fn init(application_name: &str) -> Imperium {
-        let instance: Instance = Instance::create(application_name);
-        let window: window::Window = window::Window::create_fullscreen(application_name).expect("Fatal Error: Failed to create primary window for Imperium Engine.");
-        let renderer: render::Renderer = render::Renderer::create(&instance, &window);
-
-        return Imperium { instance, window, renderer, clear_color: Color::black(), should_terminate: false };
-    }
-
-    pub fn poll_events(&mut self) -> Vec<window::Event> {
-        let events: Vec<window::Event> = self.window.collect_events();
-        for event in events.iter() {
-            if let window::winit::Event::WindowEvent { event, .. } = event {
-                match event {
-                    window::winit::WindowEvent::CloseRequested => self.should_terminate = true,
-                    // We need to recreate our swapchain if we resize, so we'll set
-                    // a flag when that happens.
-                    window::winit::WindowEvent::Resized(_) => {
-                        self.invalidate_surface();
-                    }
-                    _ => {}
-                }
-            }
-        }
-        return events;
-    }
-
-    pub fn render<F>(&mut self, mut f: F)
-        where F: FnMut(&mut render::Graphics, &mut command::Encoder) {
-        // Render Cycle.
-        if !self.renderer.command_dispatch.dispatch_render(self.clear_color, &mut self.renderer.graphics, |graphics, encoder| {
-            f(graphics, encoder);
-        }) {
-            // If rendering failed, we should rebuild swapchain.
-            self.invalidate_surface();
-        }
-
-    }
-
-    pub fn update(&mut self) {
-        if !self.renderer.graphics.render_surface.is_valid {
-            self.renderer.graphics.render_surface.rebuild(&mut self.renderer.graphics.device, &self.window, &self.renderer.graphics.render_pass, &mut self.renderer.command_dispatch);
-            log!(debug, 0, "Rebuilding swapchain.");
-        }
-    }
-
-    pub fn invalidate_surface(&mut self) {
-        self.renderer.graphics.render_surface.invalidate();
-    }
-
-    pub fn graphics(&mut self) -> &mut render::Graphics {
-        return &mut self.renderer.graphics;
+        return Self { gfx_inst };
     }
 
 }

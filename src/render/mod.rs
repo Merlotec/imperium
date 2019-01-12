@@ -15,6 +15,7 @@ const DEPTH_FORMAT: gfx::format::Format = gfx::format::Format::D32FloatS8Uint;
 pub struct Surface {
 
     pub is_valid: bool,
+    pub did_rebuild: bool,
 
     pub window_surface: window::WindowSurface,
 
@@ -88,7 +89,7 @@ impl Surface {
             gfx::Backbuffer::Framebuffer(fbo) => (vec![], vec![fbo]),
         };
 
-        return Surface { is_valid: true, window_surface, swapchain, images, framebuffers, viewport, depth_view }
+        return Surface { is_valid: true, did_rebuild: false, window_surface, swapchain, images, framebuffers, viewport, depth_view }
 
     }
 
@@ -166,6 +167,7 @@ impl Surface {
 
         // Revalidate.
         self.is_valid = true;
+        self.did_rebuild = true;
     }
 
     pub fn destroy(&mut self, device: &core::Device, command_dispatch: &mut command::CommandDispatch) {
@@ -294,6 +296,15 @@ impl Renderer {
         return Self { graphics, command_dispatch };
     }
 
+    pub fn render<F>(&mut self, clear_color: Color, mut f: F) -> bool
+        where F: FnMut(&mut render::Graphics, &mut command::Encoder) {
+        // Render Cycle.
+        return self.command_dispatch.dispatch_render(clear_color, &mut self.graphics, |graphics, encoder| {
+            f(graphics, encoder);
+        });
+
+    }
+
 }
 
 /// The structure which contains depth image information for rendering depth properly.
@@ -380,8 +391,8 @@ impl RenderTransform {
         return RenderTransform { model, view, projection };
     }
 
-    pub fn create_buffer(self, device: &core::Device) -> buffer::Buffer {
-        return buffer::Buffer::create_uniform(&[self], device);
+    pub fn alloc_buffer(self, device: &core::Device) -> buffer::Buffer {
+        return buffer::Buffer::alloc_uniform(&[self], device);
     }
 
 }

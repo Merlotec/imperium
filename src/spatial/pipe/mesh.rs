@@ -1,81 +1,12 @@
 use crate::*;
 
 use spatial::*;
+use spatial::light::LightsList;
+use spatial::material::MaterialsList;
 
 use gfx::Device as GfxDevice;
 
 const MAX_DESCRIPTORS: usize = 1000;
-
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct AmbientData {
-    pub intensity: f32,
-    padding: [i32; 3],
-    pub color: Color,
-}
-
-impl AmbientData {
-    pub fn new(intensity: f32, color: Color) -> AmbientData {
-        return AmbientData { intensity, color, padding: [0; 3] };
-    }
-}
-
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct DiffuseData {
-    pub intensity: f32,
-    padding: [i32; 3],
-    pub color: Color,
-    pub direction: Vector3f,
-    padding_2: i32,
-}
-
-impl DiffuseData {
-    pub fn new(intensity: f32, color: Color, direction: Vector3f,) -> DiffuseData {
-        return DiffuseData { intensity, color, direction, padding: [0; 3], padding_2: 0 };
-    }
-
-}
-
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct LightData {
-    pub ambient: AmbientData,
-    pub diffuse: DiffuseData,
-}
-
-impl LightData {
-    pub fn new() -> LightData {
-        return LightData { ambient: AmbientData::new(0.0, Color::black()), diffuse: DiffuseData::new(0.0, Color::black(), Vector3f::zero()) };
-    }
-}
-
-const MAX_LIGHTS: usize = 20;
-
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct LightList {
-
-    pub count: i32,
-    padding: [i32; 3],
-    pub lights: [LightData; MAX_LIGHTS],
-
-}
-
-impl LightList {
-
-    pub fn new() -> LightList {
-        return LightList { count: 0, lights: [LightData::new(); MAX_LIGHTS], padding: [0; 3] };
-    }
-
-    pub fn add_light(&mut self, data: LightData) {
-        if (self.count as usize) < MAX_LIGHTS {
-            self.lights[self.count as usize] = data;
-        }
-        self.count += 1;
-    }
-
-}
 
 const MAX_BONES: usize = 100;
 
@@ -104,9 +35,7 @@ pub struct MeshRenderPipeline {
     pub descriptor_pool: pipeline::DescriptorPool,
     pub intrinsic_descriptor_interface: pipeline::DescriptorSetInterface,
     pub texture_input_desc: pipeline::DescriptorSetLayout,
-    pub bone_uniform: pipeline::Uniform,
-    pub lights_uniform: pipeline::Uniform,
-
+    pub bone_uniform: buffer::Buffer,
 
     pub is_bound: bool,
 }
@@ -114,32 +43,28 @@ pub struct MeshRenderPipeline {
 impl MeshRenderPipeline {
 
     pub fn create(device: &mut core::Device, render_pass: &render::RenderPass) -> MeshRenderPipeline {
-        let mut lights_uniform = pipeline::Uniform::create(&[LightList::new()], device);
-        let mut bone_uniform = pipeline::Uniform::create(&[BoneList::new()], device);
-
+        let mut lights_uniform = buffer::Buffer::alloc_uniform(&[LightsList::new()], device);
+        let mut bone_uniform = buffer::Buffer::alloc_uniform(&[BoneList::new()], device);
         let instrinsic_set_layout = pipeline::DescriptorSetLayout::create(&[
-            (&bone_uniform, pipeline::ShaderStage::Vertex, 0),
-            (&lights_uniform, pipeline::ShaderStage::Fragment, 1)
+            (&bone_uniform, pipeline::ShaderStage::Vertex),
+            (&lights_uniform, pipeline::ShaderStage::Fragment),
         ], device);
-
         let texture_input_desc: pipeline::DescriptorSetLayout = pipeline::DescriptorSetLayout::create(&[
-            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment, 0),
-            (&pipeline::ShaderInputDescriptor::sampler_descriptor(), pipeline::ShaderStage::Fragment, 1),
+            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment),
+            (&pipeline::ShaderInputDescriptor::sampler_descriptor(), pipeline::ShaderStage::Fragment),
+            (&pipeline::ShaderInputDescriptor::uniform_buffer_descriptor(), pipeline::ShaderStage::Fragment),
         ], device);
-
         log!(debug, 4, "Attempting to create descriptor sets.");
 
         let mut descriptor_pool: pipeline::DescriptorPool = pipeline::DescriptorPool::new(MAX_DESCRIPTORS, &[
             (&instrinsic_set_layout, 1),
-            (&texture_input_desc, MAX_DESCRIPTORS - 1)
+            (&texture_input_desc, MAX_DESCRIPTORS - 1),
         ], device);
-
-        let intrinsic_descriptor_set: pipeline::DescriptorSet = pipeline::DescriptorSet::create(&[
+        let intrinsic_descriptor_set: pipeline::DescriptorSet = pipeline::DescriptorSet::with_inputs(&[
             (&bone_uniform, 0),
             (&lights_uniform, 1),
         ], &instrinsic_set_layout, &mut descriptor_pool, device
-        );
-
+        ).log_expect("Failed to create intrinsic descriptor set for mesh render pipeline.");
         let intrinsic_descriptor_interface = pipeline::DescriptorSetInterface::new(instrinsic_set_layout, intrinsic_descriptor_set);
 
         log!(debug, 4, "Successfully created and allocated internal descriptor sets.");
@@ -245,6 +170,14 @@ impl MeshRenderPipeline {
                     offset: 48,
                 },
             });
+            pipeline_desc.attributes.push(gfx::pso::AttributeDesc {
+                location: 5,
+                binding: 0,
+                element: gfx::pso::Element {
+                    format: gfx::format::Format::R32Int,
+                    offset: 64,
+                },
+            });
 
             pipeline_desc.depth_stencil = gfx::pso::DepthStencilDesc {
                 depth: gfx::pso::DepthTest::On {
@@ -260,11 +193,7 @@ impl MeshRenderPipeline {
 
         let pipeline = pipeline::PipelineController::new(pipeline_object, pipeline_layout);
         log!(debug, 3, "Successfully created mesh render pipeline.");
-        return MeshRenderPipeline { pipeline, descriptor_pool, intrinsic_descriptor_interface, texture_input_desc, bone_uniform, lights_uniform, is_bound: false };
-    }
-
-    pub fn upload_lights(&self, light_list: LightList, device: &core::Device) {
-        self.lights_uniform.upload_data(&[light_list], device);
+        return MeshRenderPipeline { pipeline, descriptor_pool, intrinsic_descriptor_interface, texture_input_desc, bone_uniform, is_bound: false };
     }
 
     /// Renders the vertex input data with a texture.

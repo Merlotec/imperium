@@ -14,19 +14,31 @@ use gfx::Device;
 
 pub mod model;
 pub mod light;
+pub mod material;
 
 pub mod pipe;
 pub mod sys;
 
 use specs::prelude::*;
+use self::light::*;
+use node::*;
 
 use self::pipe::mesh::*;
 
 pub type Scene3D<'a, 'b> = scene::Scene<'a, 'b, Spatial>;
+
+impl<'a, 'b> Scene3D<'a, 'b> {
+    pub fn create_3d(renderer: &mut render::Renderer) -> Self {
+        return Self::create(Spatial, renderer);
+    }
+}
+
 pub type PrimaryEntity3D<C: scene::ComponentOf<Spatial>> = scene::PrimaryEntity<Spatial, C>;
 
 /// The NodeObject3D can be used as a Spatial component.
 impl scene::ComponentOf<Spatial> for NodeObject3D {}
+impl scene::ComponentOf<Spatial> for LightComponent {}
+impl scene::ComponentOf<Spatial> for MeshComponent {}
 
 /// The spatial aggregator for use with a `Scene`.
 pub struct Spatial;
@@ -39,16 +51,22 @@ impl scene::Aggregator for Spatial {
     /// Here `self` (lower case `s`) denotes this module.
     type Camera = self::Camera;
 
+    type Node = node::NodeObject3D;
+
     fn build_entity(mut entity_builder: scene::EntityBuilder) -> scene::Entity where Self : Sized {
         return entity_builder.with(NodeObject3D::new()).build();
     }
     fn load<'a, 'b : 'a>(&mut self, renderer: &mut render::Renderer, dispatcher_builder: scene::DispatcherBuilder<'a, 'b>, world: &mut scene::World) -> scene::DispatcherBuilder<'a, 'b> {
-        world.register::<NodeObject3D>();
-        world.register::<model::MeshComponent>();
+        // Camera and node types already registered.
+        // Here we register additional types.
+        world.register::<MeshComponent>();
+        world.register::<light::LightComponent>();
+        world.register::<material::MaterialComponent>();
 
         world.add_resource(MeshRenderPipeline::create(&mut renderer.graphics.device, &mut renderer.graphics.render_pass));
+        world.add_resource(LightsController::new(&mut renderer.graphics.device));
 
-        dispatcher_builder.with(sys::MeshRenderSystem, "render::mesh", &[])
+        dispatcher_builder.with(sys::MeshRenderSystem, "render::mesh", &[]).with(sys::LightSystem, "helper::light", &[])
     }
     fn update(&mut self, world: &mut scene::World) {
 
@@ -76,49 +94,6 @@ impl<A: scene::Aggregator, C: scene::ComponentOf<A>> scene::PrimaryEntity<A, C>
     }
 }
 
-/// The RenderCycle object is an encapsulating structure which includes all data needed for rendering a scene.
-/// This simply makes code more readable as we only need one parameter rather than three.
-pub struct RenderCycle<'a, 'b : 'a> {
-
-    pub scene: &'a mut Scene,
-    pub graphics: &'a mut render::Graphics,
-    pub encoder: &'a mut command::Encoder<'b>,
-
-}
-
-impl<'a, 'b : 'a> RenderCycle<'a, 'b> {
-
-    /// Creates a new RenderCycle object with the specified mutable references.
-    pub fn new(scene: &'a mut Scene, graphics: &'a mut render::Graphics, encoder: &'a mut command::Encoder<'b>) -> Self {
-        return Self { scene, graphics, encoder };
-    }
-
-    /// Renders the node by calling its render function.
-    pub fn render(&mut self, node: &mut ComponentNode) {
-        node.render(self);
-    }
-
-}
-
-/// The UpdateCycle is similar to the RenderCycle object.
-/// It contains all the data needed to update a Scene component.
-pub struct UpdateCycle<'a> {
-
-    pub scene: &'a mut Scene,
-    pub renderer: &'a mut render::Renderer,
-    pub delta: f32,
-
-}
-
-impl<'a> UpdateCycle<'a> {
-
-    /// Creates a new UpdateCycle object with the specified mutable references.
-    pub fn new(scene: &'a mut Scene, renderer: &'a mut render::Renderer, delta: f32) -> Self {
-        return Self { scene, renderer, delta };
-    }
-
-}
-
 pub trait RenderComponent {
 
     type RenderPipeline;
@@ -127,37 +102,13 @@ pub trait RenderComponent {
 
 }
 
-pub trait Component {
-
-    fn update(&mut self, cycle: &mut UpdateCycle) {}
-
-    fn render(&mut self, transform: Matrix4f, cycle: &mut RenderCycle);
-
-    /// Should return the geometry of this component.
-    /// There can be multiple geometry 'sections' for any physics component.
-    fn create_physics(&self, physics_world: &mut physics::World) -> PhysicsData {
-        return PhysicsData::none();
-    }
-
-    /// Updates the physics bodies of a component which manages physics.
-    fn update_physics(&mut self, physics_data: &mut PhysicsData, physics_world: &mut physics::World) {}
-
-}
-
 /// Defines a component which can be rendered in batch by the scene.
 /// The 'render_batch' function should call the necessary functions on the scene object in order to properly execute a batch render.
+/*
 pub trait BatchRenderComponent {
     fn render_batch(&mut self, transforms: &[Matrix4f], cycle: &mut RenderCycle);
 }
-
-/// Defines a component which knows its own transform.
-/// This will be the case for nodes, since they have their own transforms defined by their position, rotation and scale.
-/// However, this trait can be implemented by things other than nodes, e.g. a World.
-pub trait ComponentNode {
-    fn update(&mut self, cycle: &mut UpdateCycle);
-    fn render(&mut self, cycle: &mut RenderCycle);
-    fn update_physics(&mut self, physics_world: &mut physics::World);
-}
+*/
 
 /// The container struct for all the physics data of a node.
 /// This includes bodies and will also include joints in the future.
@@ -294,60 +245,6 @@ impl PhysicsBody {
 
 }
 
-pub struct Node<T: Component> {
-    pub node: node::NodeObject3D,
-    pub physics_data: PhysicsData,
-    pub component: T,
-}
-
-impl<T: Component> Node<T> {
-
-    /// Creates a new node containing the specified instantiated component.
-    pub fn new(component: T, physics_world: &mut physics::World) -> Self {
-        let node: NodeObject3D = node::NodeObject3D::new();
-        let physics_data: PhysicsData = component.create_physics(physics_world);
-        return Self { node, physics_data, component };
-    }
-
-}
-
-impl<T: Component> ComponentNode for Node<T> {
-    fn update(&mut self, cycle: &mut UpdateCycle) {
-        self.component.update(cycle);
-    }
-    fn render(&mut self, cycle: &mut RenderCycle) {
-        self.component.render(self.node.get_trans(), cycle);
-    }
-    fn update_physics(&mut self, physics_world: &mut physics::World) {
-        self.component.update_physics(&mut self.physics_data, physics_world);
-    }
-}
-
-impl<T: Component> Deref for Node<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        return &self.component;
-    }
-}
-
-impl<T: Component> DerefMut for Node<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        return &mut self.component;
-    }
-}
-
-impl<T: Component> node::NodeImplementor3D for Node<T> {
-
-    fn get_node_obj(&self) -> &NodeObject3D {
-        return &self.node;
-    }
-
-    fn get_node_obj_mut(&mut self) -> &mut NodeObject3D {
-        return &mut self.node;
-    }
-
-}
-
 const CAMERA_FOV: f32 = 0.8;
 const CAMERA_NEAR: f32 = 100.0;
 const CAMERA_FAR: f32 = 1000000000000000000.0;
@@ -379,7 +276,7 @@ impl Camera {
         }
     }
 
-    pub fn set_frame_size(&mut self, frame_size: Vector2f) {
+    pub fn reframe(&mut self, frame_size: Vector2f) {
         let aspect: f32 = frame_size.x / frame_size.y;
         self.projection = Self::perspective_projection(aspect, self.fov, CAMERA_NEAR, CAMERA_FAR);
         self.frame_size = frame_size;
@@ -454,8 +351,8 @@ impl Camera {
 
 impl scene::Camera for Camera {
 
-    fn camera_transform(&self) -> scene::CameraTransform {
-        return scene::CameraTransform::new(self.get_projection_matrix(), self.get_view_matrix());
+    fn camera_transform(&self, node: &node::Node) -> scene::CameraTransform {
+        return scene::CameraTransform::new(self.get_projection_matrix(), node.get_trans().inverse_transform().expect("UNEXPECTED MATRIX ERROR"));
     }
 
 }
@@ -466,94 +363,46 @@ impl scene::Component for Camera {
 
 impl scene::ComponentOf<Spatial> for Camera {}
 
-impl node::NodeImplementor3D for Camera {
+pub struct MeshComponent {
 
-    fn get_node_obj(&self) -> &node::NodeObject3D {
-        return &self.node;
+    pub meshes: Vec<model::BufferedMesh>,
+
+}
+
+impl MeshComponent {
+
+    pub fn new(meshes: Vec<model::BufferedMesh>) -> Self {
+        return Self { meshes };
     }
 
-    fn get_node_obj_mut(&mut self) -> &mut node::NodeObject3D {
-        return &mut self.node;
+    pub fn from_model(model: &model::Model, textures: Vec<&texture::Texture>, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> Self {
+        let mut meshes: Vec<model::BufferedMesh> = Vec::with_capacity(model.meshes.len());
+
+        let mut i: usize = 0;
+        for mesh in model.meshes.iter() {
+            if let Some(tex) = textures.get(i) {
+                let mesh: model::BufferedMesh = model::BufferedMesh::new(&mesh, tex, pipeline, renderer);
+                meshes.push(mesh);
+            }
+            i += 1;
+        }
+        return Self::new(meshes);
+    }
+
+    pub fn render_meshes(&mut self, transform: render::RenderTransform, pipeline: &mut MeshRenderPipeline, render_core: &mut render::RenderCore) {
+        for mesh in self.meshes.iter_mut() {
+            mesh.render(transform, pipeline, render_core)
+        }
     }
 
 }
 
-/// The Scene struct contains data necessary for rendering a scene.
-/// NOTE: components are not contained within the scene, and neither are lights.
-/// However the raw light data that is sent to the shader is stored so that lights do not have to be re-uploaded on every frame.
-/// This increases efficiency.
-pub struct Scene {
-
-    /// The camera can be used to transform the scene components so that they render as if they were being viewed by a camera.
-    pub camera: Camera,
-
-    /// The lights list is the raw shader data which is uploaded to the GPU whenever 'upload_lights' is called.
-    /// This should only be called when the lights are changed.
-    pub light_list: LightList,
-
-    pub mesh_pipeline: MeshRenderPipeline,
-
-    /// A physics world that can be used for physics simulation.
-    pub physics_world: physics::World,
-
+impl specs::Component for MeshComponent {
+    type Storage = specs::VecStorage<Self>;
 }
 
-impl Scene {
+pub struct MetaRenderComponent {
 
-    /// Creates a new emtpy scene with a camera pointing forward with perspective projection.
-    /// There are no lights in the scene, and all lights should be added and uploaded manually using 'apply_light' then 'upload_lights' when all the lights have been added.
-    pub fn create(graphics: &mut render::Graphics) -> Scene {
-        let camera = Camera::create(graphics.render_surface.get_size(), 0.9);
-        let mesh_pipeline: MeshRenderPipeline = MeshRenderPipeline::create(&mut graphics.device, &graphics.render_pass);
-        let light_list: LightList = LightList::new();
-        let physics_world: physics::World = physics::World::new();
-        return Scene { camera, light_list, mesh_pipeline, physics_world };
-    }
 
-    /// Removes all lights from the light list by creating a new, empty light list.
-    /// This can be used if lights are added each frame before rendering.
-    /// The use of this function depends on the rendering technique used.
-    pub fn clear_lights(&mut self) {
-        self.light_list = LightList::new();
-    }
-
-    pub fn apply_light(&mut self, light: &light::Light) {
-        self.add_light_data(light.get_data());
-    }
-
-    pub fn add_light_data(&mut self, light_data: LightData) {
-        self.light_list.add_light(light_data);
-    }
-
-    /// Begins the render cycle by creating the render cycle object for the scene.
-    pub fn begin_render_cycle<'a, 'b : 'a>(&'a mut self, graphics: &'a mut render::Graphics, encoder: &'a mut command::Encoder<'b>) -> RenderCycle<'a, 'b> {
-        self.mesh_pipeline.reset();
-        return RenderCycle::new(self, graphics, encoder);
-    }
-
-    /// If lighting has changed since the last upload, this should be called before any rendering takes place to upload the lighting to the gpu.
-    /// If no changes have been made to the light_list object since it was last uploaded, there is no need to call this function.
-    /// Once this function is called any changes made to the lights in the scene will not be reflected in the render until this function is called again.
-    pub fn upload_lights(&self, device: &core::Device) {
-        self.mesh_pipeline.upload_lights(self.light_list, device);
-    }
-
-    /// Updates the scene to be ready to render another frame.
-    pub fn begin_update_cycle<'a>(&'a mut self, renderer: &'a mut render::Renderer, delta: f32) -> UpdateCycle<'a> {
-        return UpdateCycle::new(self, renderer, delta);
-    }
-
-    pub fn render_mesh(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transform: render::RenderTransform, graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
-        self.mesh_pipeline.render(vertex_input, texture_set, transform, graphics, encoder);
-    }
-
-    pub fn render_mesh_batch(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transforms: &[render::RenderTransform], graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
-        self.mesh_pipeline.render_batch(vertex_input, texture_set, transforms, graphics, encoder);
-    }
-    /// Updates the physics node.
-    pub fn update_physics(&mut self, physics_node: &mut ComponentNode) {
-        physics_node.update_physics(&mut self.physics_world);
-    }
 
 }
-

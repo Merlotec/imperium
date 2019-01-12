@@ -29,9 +29,7 @@ fn main() -> Result<(), Box<Error>> {
                     }
                 }
             }
-            println!("HI");
             let source = std::fs::read_to_string(&in_path)?;
-            println!("OK");
             let mut compiled_file = glsl_to_spirv::compile(&source, shader_type)?;
             // Read the binary data from the compiled file
             let mut compiled_bytes = Vec::new();
