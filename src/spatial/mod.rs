@@ -18,6 +18,10 @@ pub mod material;
 
 pub mod pipe;
 pub mod sys;
+pub mod pass;
+
+use std::sync::Arc;
+use std::cell::RefCell;
 
 use specs::prelude::*;
 use self::light::*;
@@ -28,20 +32,31 @@ use self::pipe::mesh::*;
 pub type Scene3D<'a, 'b> = scene::Scene<'a, 'b, Spatial>;
 
 impl<'a, 'b> Scene3D<'a, 'b> {
-    pub fn create_3d(renderer: &mut render::Renderer) -> Self {
-        return Self::create(Spatial, renderer);
+    pub fn create_3d(graphics: &mut render::Graphics) -> Self {
+        return Self::create(Spatial::new(graphics), graphics);
     }
 }
 
-pub type PrimaryEntity3D<C: scene::ComponentOf<Spatial>> = scene::PrimaryEntity<Spatial, C>;
+pub type PrimaryEntity3D<C> = scene::PrimaryEntity<Spatial, C>;
+pub type BaseEntity3D = scene::BaseEntity<Spatial>;
 
 /// The NodeObject3D can be used as a Spatial component.
 impl scene::ComponentOf<Spatial> for NodeObject3D {}
 impl scene::ComponentOf<Spatial> for LightComponent {}
-impl scene::ComponentOf<Spatial> for MeshComponent {}
 
 /// The spatial aggregator for use with a `Scene`.
-pub struct Spatial;
+pub struct Spatial {
+    render_pass: pass::SpatialPass,
+}
+
+impl Spatial {
+
+    pub fn new(graphics: &mut render::Graphics) -> Self {
+        let render_pass: pass::SpatialPass = pass::SpatialPass::new(graphics);
+        return Self { render_pass };
+    }
+
+}
 
 impl scene::HasIntrinsic<NodeObject3D> for Spatial {}
 
@@ -53,29 +68,54 @@ impl scene::Aggregator for Spatial {
 
     type Node = node::NodeObject3D;
 
-    fn build_entity(mut entity_builder: scene::EntityBuilder) -> scene::Entity where Self : Sized {
-        return entity_builder.with(NodeObject3D::new()).build();
+    fn build_entity(mut entity_builder: scene::EntityBuilder) -> EntityBuilder where Self : Sized {
+        entity_builder.with(NodeObject3D::new())
     }
-    fn load<'a, 'b : 'a>(&mut self, renderer: &mut render::Renderer, dispatcher_builder: scene::DispatcherBuilder<'a, 'b>, world: &mut scene::World) -> scene::DispatcherBuilder<'a, 'b> {
+    fn load<'a, 'b : 'a>(&mut self, graphics: &mut render::Graphics, dispatcher_builder: scene::DispatcherBuilder<'a, 'b>, world: &mut scene::World) -> scene::DispatcherBuilder<'a, 'b> {
         // Camera and node types already registered.
         // Here we register additional types.
-        world.register::<MeshComponent>();
+        world.register::<model::BufferedMesh>();
         world.register::<light::LightComponent>();
         world.register::<material::MaterialComponent>();
 
-        world.add_resource(MeshRenderPipeline::create(&mut renderer.graphics.device, &mut renderer.graphics.render_pass));
-        world.add_resource(LightsController::new(&mut renderer.graphics.device));
+        world.add_resource::<scene::GraphicsCapsule>(scene::GraphicsCapsule::new());
+        world.add_resource(pass::SpatialPass::new(graphics));
+        world.add_resource(MeshRenderPipeline::create(&mut graphics.device, &mut self.render_pass.pass));
+        world.add_resource(LightsController::new(&mut graphics.device));
 
-        dispatcher_builder.with(sys::MeshRenderSystem, "render::mesh", &[]).with(sys::LightSystem, "helper::light", &[])
+        dispatcher_builder.with(sys::NodeHierarchySystem, "node_hierarchy",&[]).with(sys::MeshRenderSystem, "mesh_render", &[])//.with(sys::LightSystem, "light", &[])
     }
-    fn update(&mut self, world: &mut scene::World) {
-
+    fn dispatch_systems(&mut self, world: &mut World, dispatcher: &mut Dispatcher, graphics: &mut render::Graphics) {
+        world.write_resource::<scene::GraphicsCapsule>().lend_graphics(graphics);
+        dispatcher.dispatch(&world.res);
+        world.write_resource::<scene::GraphicsCapsule>().invalidate();
     }
 }
 
 impl<A: scene::Aggregator, C: scene::ComponentOf<A>> scene::PrimaryEntity<A, C>
     where NodeObject3D : scene::ComponentOf<A>, A : scene::HasIntrinsic<NodeObject3D>  {
-    pub fn get_node<'a, 'b>(&'a self, world: &'b scene::World) -> Option<&'b node::Node3D> {
+    pub fn node<'a, 'b>(&'a self, world: &'b scene::World) -> Option<&'b node::Node3D> {
+        let node_storage = world.read_storage::<node::NodeObject3D>();
+        if let Some(cmp) = node_storage.get(self.entity) {
+            return Some(unsafe { mem::transmute(cmp as &node::Node3D) });
+        }
+        return None;
+    }
+
+    /// I think that this is allowed because the storage references data in the World object.
+    /// This means that even if the storage object is destroyed, the data it points to is still valid.s
+    pub fn node_mut<'a, 'b>(&'a self, world: &'b mut scene::World) -> Option<&'b mut node::Node3D> {
+        let mut node_storage = world.write_storage::<node::NodeObject3D>();
+        if let Some(cmp) =  node_storage.get_mut(self.entity) {
+            return Some(unsafe { mem::transmute(cmp as &mut node::Node3D) });
+        }
+        return None;
+    }
+}
+
+impl<A: scene::Aggregator> scene::BaseEntity<A>
+    where NodeObject3D : scene::ComponentOf<A>, A : scene::HasIntrinsic<NodeObject3D>  {
+    pub fn node<'a, 'b>(&'a self, world: &'b scene::World) -> Option<&'b node::Node3D> {
         let node_storage = world.read_storage::<node::NodeObject3D>();
         if let Some(cmp) = node_storage.get(self.entity) {
             return Some(unsafe { mem::transmute(cmp as &node::Node3D) });
@@ -98,7 +138,7 @@ pub trait RenderComponent {
 
     type RenderPipeline;
 
-    fn render(&mut self, transform: render::RenderTransform, pipeline: &mut Self::RenderPipeline, render_core: &mut render::RenderCore);
+    fn render(&mut self, transform: render::RenderTransform, pipeline: &mut Self::RenderPipeline, dispatch: &mut render::Dispatch);
 
 }
 
@@ -246,8 +286,8 @@ impl PhysicsBody {
 }
 
 const CAMERA_FOV: f32 = 0.8;
-const CAMERA_NEAR: f32 = 100.0;
-const CAMERA_FAR: f32 = 1000000000000000000.0;
+const CAMERA_NEAR: f32 = 20.0;
+const CAMERA_FAR: f32 = 1000000.0;
 
 /// The camera structure contains transformation data which will transform the vertices in the world to represent the camera's view and projection.
 pub struct Camera {
@@ -362,47 +402,3 @@ impl scene::Component for Camera {
 }
 
 impl scene::ComponentOf<Spatial> for Camera {}
-
-pub struct MeshComponent {
-
-    pub meshes: Vec<model::BufferedMesh>,
-
-}
-
-impl MeshComponent {
-
-    pub fn new(meshes: Vec<model::BufferedMesh>) -> Self {
-        return Self { meshes };
-    }
-
-    pub fn from_model(model: &model::Model, textures: Vec<&texture::Texture>, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> Self {
-        let mut meshes: Vec<model::BufferedMesh> = Vec::with_capacity(model.meshes.len());
-
-        let mut i: usize = 0;
-        for mesh in model.meshes.iter() {
-            if let Some(tex) = textures.get(i) {
-                let mesh: model::BufferedMesh = model::BufferedMesh::new(&mesh, tex, pipeline, renderer);
-                meshes.push(mesh);
-            }
-            i += 1;
-        }
-        return Self::new(meshes);
-    }
-
-    pub fn render_meshes(&mut self, transform: render::RenderTransform, pipeline: &mut MeshRenderPipeline, render_core: &mut render::RenderCore) {
-        for mesh in self.meshes.iter_mut() {
-            mesh.render(transform, pipeline, render_core)
-        }
-    }
-
-}
-
-impl specs::Component for MeshComponent {
-    type Storage = specs::VecStorage<Self>;
-}
-
-pub struct MetaRenderComponent {
-
-
-
-}

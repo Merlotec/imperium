@@ -15,33 +15,6 @@ use gfx::DescriptorPool;
 
 use self::colored::{Color as PrintColor, Colorize as PrintColorize, ColoredString as PrintColoredString};
 
-/// This trait defines the core Instance drawing abstraction.
-/// The Instance engine can be used by passing a single 'Component' implementing object to the engine object.
-/// In most cases, the rendering method used (e.g. Scene2D, Scene3D) will implement this for the programmer.
-/// These abstractions use there own methods of rendering their individual components.
-/// This allows for modularity as every rendering method can pass its own arguments to it's components and are not restricted to what is defined in this trait.
-pub trait Component {
-
-    /// All logical behaviour (not direct rendering) should be handled in this function.
-    /// The command pool object is available in this function in order to move buffers, upload images etc.
-    /// This cannot be done in the render function because the command pool is borrowed by the encoder.
-    /// The Graphics object contains the Renderer object and the CommandDispatch object.
-    /// Both can be used to update buffers and submit GPU commands.
-    /// Theoretically, this function could be used to draw but IT SHOULD NOT BE DONE UNLESS YOU REALLY KNOW WHAT YOU ARE DOING!
-    /// This is because all rendering should be done using the same encoder submission.
-    fn update(&mut self, renderer: &mut render::Renderer, window: &mut window::Window, delta: f32);
-
-    /// This function is called frames where events should be handled.
-    /// It is the responsibility of the implementation to defer calls to any children.
-    fn handle_events(&mut self, events: &Vec<window::Event>, renderer: &mut render::Renderer, window: &mut window::Window, delta: f32) {}
-
-    /// The draw functions should be added to the encoder in order to draw to the screen.
-    /// Logic related to the component SHOULD NOT be updated in this function. For logic, use the 'update' function.
-    /// This function does not have access to the command pool object so creating and moving buffers cannot be done.
-    fn render(&mut self, graphics: &mut render::Graphics, encoder: &mut command::Encoder);
-
-}
-
 /// The instance object for the engine which all other devices are created from.
 /// This structure encapsulates the backend instance object (e.g. vulkan instance).
 /// It is therefore only needed for device creation.
@@ -67,7 +40,7 @@ pub struct Device {
 
     pub color_format: gfx::format::Format,
     pub adapter: gfx::Adapter<Backend>,
-    pub device: Arc<<Backend as gfx::Backend>::Device>,
+    pub gpu: Arc<<Backend as gfx::Backend>::Device>,
     pub queue_group: gfx::QueueGroup<Backend, gfx::Graphics>,
 
     pub capabilites: gfx::SurfaceCapabilities,
@@ -83,14 +56,14 @@ impl Device {
         // TODO: Amend code to check if device is suitable.
         let mut adapter: gfx::Adapter<Backend> = instance.gfx_inst.enumerate_adapters().remove(0);
 
-        let (device, queue_group) =
+        let (gpu, queue_group) =
             adapter.open_with::<_, gfx::Graphics>(1, |family| window_surface.surface.supports_queue_family(family))
                 .expect("Fatal Error: Failed to find valid device.");
 
         // We want to get the capabilities (`caps`) of the surface, which tells us what
         // parameters we can use for our swapchain later. We also get a list of supported
         // image formats for our surface.
-        let (caps, formats, _) = window_surface.surface.compatibility(&adapter.physical_device);
+        let (caps, formats, _, _) = window_surface.surface.compatibility(&adapter.physical_device);
 
         let color_format = {
             // We must pick a color format from the list of supported formats. If there
@@ -104,7 +77,7 @@ impl Device {
             }
         };
 
-        return Device { color_format, adapter: adapter, device: Arc::new(device), queue_group, capabilites: caps };
+        return Device { color_format, adapter: adapter, gpu: Arc::new(gpu), queue_group, capabilites: caps };
 
     }
 
@@ -113,7 +86,7 @@ impl Device {
         if let Ok(mut f) = std::fs::File::open(path) {
             let mut contents = String::new();
             if let Ok(_) = f.read_to_string(&mut contents) {
-                return Ok(self.device.create_shader_module(&contents.into_bytes()).unwrap());
+                return Ok(unsafe { self.gpu.create_shader_module(&contents.into_bytes()).unwrap() });
             } else {
                 return Err("Failed to read shader file.");
             }
@@ -124,17 +97,17 @@ impl Device {
     }
 
     pub fn load_shader_raw(&self, bytes: &[u8]) -> Result<<Backend as gfx::Backend>::ShaderModule, &'static str> {
-        if let Ok(module) = self.device.create_shader_module(bytes) {
+        if let Ok(module) = unsafe { self.gpu.create_shader_module(bytes) } {
             return Ok(module);
         } else {
             return Err("Failed to create shader module.");
         }
     }
 
-    pub fn upload_type_for(&self, unbound_buffer: &<Backend as gfx::Backend>::UnboundBuffer, properties: gfx::memory::Properties) -> (gfx::MemoryTypeId, gfx::memory::Requirements) {
+    pub fn upload_type_for(&self, unbound_buffer: &<Backend as gfx::Backend>::Buffer, properties: gfx::memory::Properties) -> (gfx::MemoryTypeId, gfx::memory::Requirements) {
         let memory_types = self.adapter.physical_device.memory_properties().memory_types;
 
-        let req = self.device.get_buffer_requirements(unbound_buffer);
+        let req = unsafe { self.gpu.get_buffer_requirements(unbound_buffer) };
 
         let upload_type = memory_types
             .iter()
@@ -157,7 +130,7 @@ impl Device {
 /// This token can be used to destroy objects.
 pub struct DeviceToken {
 
-    pub device: Arc<<Backend as gfx::Backend>::Device>,
+    pub gpu: Arc<<Backend as gfx::Backend>::Device>,
 
 }
 
@@ -165,7 +138,7 @@ impl DeviceToken {
 
     /// Creates a device token from a device.
     pub fn create(device: &Device) -> Self {
-        return Self { device: device.device.clone() };
+        return Self { gpu: device.gpu.clone() };
     }
 
 }

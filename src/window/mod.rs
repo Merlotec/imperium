@@ -1,6 +1,6 @@
 use super::*;
 
-pub extern crate winit;
+pub use crate::winit;
 
 pub type Event = winit::Event;
 
@@ -83,6 +83,7 @@ impl Window {
 /// This structure represents the graphics surface object of a window.
 pub struct WindowSurface {
     pub surface: <Backend as gfx::Backend>::Surface,
+    pub size: Vector2f,
 }
 
 impl WindowSurface {
@@ -90,7 +91,8 @@ impl WindowSurface {
     /// Creates a new surface with the specified instance and window.
     pub fn create(instance: &core::Instance, window: &window::Window) -> Self {
         let surface: <Backend as gfx::Backend>::Surface = instance.gfx_inst.create_surface(&window.handle);
-        return Self { surface };
+        let size = window.get_size();
+        return Self { surface, size };
     }
 
 }

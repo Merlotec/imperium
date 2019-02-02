@@ -10,7 +10,9 @@ use gfx::Device as GfxDevice;
 use gfx::Swapchain;
 use gfx::DescriptorPool;
 
-const DEPTH_FORMAT: gfx::format::Format = gfx::format::Format::D32FloatS8Uint;
+
+
+pub type Framebuffer = <Backend as gfx::Backend>::Framebuffer;
 
 pub struct Surface {
 
@@ -20,20 +22,20 @@ pub struct Surface {
     pub window_surface: window::WindowSurface,
 
     pub swapchain: <Backend as gfx::Backend>::Swapchain,
-    pub framebuffers: Vec<<Backend as gfx::Backend>::Framebuffer>,
-    pub images: Vec<<Backend as gfx::Backend>::ImageView>,
-
-    pub depth_view: DepthView,
+    pub backbuffer: Option<gfx::Backbuffer<Backend>>,
 
     pub viewport: gfx::pso::Viewport,
+    pub extent: gfx::image::Extent,
+
+    device_token: core::DeviceToken,
 
 }
 
 impl Surface {
 
-    pub fn create(mut window_surface: window::WindowSurface, device: &mut core::Device, window: &window::Window, render_pass: &RenderPass) -> Surface {
+    pub fn create(mut window_surface: window::WindowSurface, device: &mut core::Device) -> Surface {
 
-        let swap_config = gfx::SwapchainConfig::from_caps(&device.capabilites, device.color_format);
+        let swap_config = gfx::SwapchainConfig::from_caps(&device.capabilites, device.color_format, gfx::window::Extent2D { width: window_surface.size.x as u32, height: window_surface.size.y as u32 });
 
         let extent = swap_config.extent.to_extent();
 
@@ -47,50 +49,65 @@ impl Surface {
             depth: (0.0 as f32)..(1.0 as f32),
         };
 
-        let (swapchain, backbuffer) = device.device.create_swapchain(&mut window_surface.surface, swap_config, None);
+        let (swapchain, backbuffer) = unsafe { device.gpu.create_swapchain(&mut window_surface.surface, swap_config, None).unwrap() };
 
-        let depth_view: DepthView = DepthView::create(&device, Vector2f::new(extent.width as f32, extent.height as f32));
+        return Surface { is_valid: true, did_rebuild: false, window_surface, swapchain, backbuffer: Some(backbuffer), viewport, extent, device_token: device.create_token() }
 
-        let (images, framebuffers) = match backbuffer {
-            gfx::Backbuffer::Images(images) => {
-                let color_range = gfx::image::SubresourceRange {
-                    aspects: gfx::format::Aspects::COLOR,
-                    levels: 0..1,
-                    layers: 0..1,
+    }
+
+    pub fn create_framebuffers(&mut self, render_pass: &RenderPass, depth: Option<gfx::format::Format>, device: &core::Device) -> Vec<Framebuffer> {
+
+        let mut depth_view: Option<buffer::TextureBuffer> = None;
+
+        if let Some(depth_format) = depth {
+            depth_view = Some(buffer::TextureBuffer::create_depth(Vector2u::new(self.extent.width, self.extent.height), depth_format, &device));
+        }
+
+        unsafe {
+            if let Some(backbuffer) = self.backbuffer.take() {
+                let (frame_views, framebuffers) = match backbuffer {
+                    gfx::Backbuffer::Images(images) => {
+                        let color_range = gfx::image::SubresourceRange {
+                            aspects: gfx::format::Aspects::COLOR,
+                            levels: 0..1,
+                            layers: 0..1,
+                        };
+
+                        let image_views = images
+                            .iter()
+                            .map(|image| {
+                                device.gpu
+                                    .create_image_view(
+                                        image,
+                                        gfx::image::ViewKind::D2,
+                                        device.color_format,
+                                        gfx::format::Swizzle::NO,
+                                        color_range.clone(),
+                                    ).unwrap()
+                            }).collect::<Vec<_>>();
+
+                        let fbos: Vec<Framebuffer> = image_views
+                            .iter()
+                            .map(|image_view| {
+                                let attachments: Vec<&<Backend as gfx::Backend>::ImageView>;
+                                if let Some(depth) = depth_view.as_ref() {
+                                    attachments = vec![image_view, &depth.image_view];
+                                } else {
+                                    attachments = vec![image_view];
+                                }
+                                device.gpu
+                                    .create_framebuffer(&render_pass.raw_render_pass, attachments, self.extent)
+                                    .unwrap()
+                            }).collect();
+
+                        (image_views, fbos)
+                    }
+                    gfx::Backbuffer::Framebuffer(fbo) => (Vec::new(), vec![fbo]),
                 };
-
-                let image_views = images
-                    .iter()
-                    .map(|image| {
-                        device.device
-                            .create_image_view(
-                                image,
-                                gfx::image::ViewKind::D2,
-                                device.color_format,
-                                gfx::format::Swizzle::NO,
-                                color_range.clone(),
-                            ).unwrap()
-                    }).collect::<Vec<_>>();
-
-                let fbos = image_views
-                    .iter()
-                    .map(|image_view| {
-                        device.device
-                            .create_framebuffer(&render_pass.raw_render_pass, vec![image_view, &depth_view.view], extent)
-                            .unwrap()
-                    }).collect();
-
-                (image_views, fbos)
+                return framebuffers;
             }
-
-            // This arm of the branch is currently only used by the OpenGL backend,
-            // which supplies an opaque framebuffer for you instead of giving you control
-            // over individual images.
-            gfx::Backbuffer::Framebuffer(fbo) => (vec![], vec![fbo]),
-        };
-
-        return Surface { is_valid: true, did_rebuild: false, window_surface, swapchain, images, framebuffers, viewport, depth_view }
-
+        }
+        return Vec::new();
     }
 
     /// Makes the swapchain invalid so that we must rebuild it next frame.
@@ -99,10 +116,11 @@ impl Surface {
     }
 
     /// Rebuilds the swapchain data for this surface object.
-    pub fn rebuild(&mut self, device: &mut core::Device, window: &window::Window, render_pass: &RenderPass, command_dispatch: &mut command::CommandDispatch) {
-        self.destroy(device, command_dispatch);
-        let (caps, _, _) = self.window_surface.surface.compatibility(&device.adapter.physical_device);
-        let swap_config = gfx::SwapchainConfig::from_caps(&caps, device.color_format);
+    pub fn rebuild(&mut self, window: &window::Window, device: &mut core::Device) {
+        self.destroy_swapchain();
+        self.window_surface.size = window.get_size();
+        let (caps, _, _, _) = self.window_surface.surface.compatibility(&device.adapter.physical_device);
+        let swap_config = gfx::SwapchainConfig::from_caps(&caps, device.color_format, gfx::window::Extent2D { width: self.window_surface.size.x as u32, height: self.window_surface.size.y as u32 });
         let extent = swap_config.extent.to_extent();
 
         let viewport = gfx::pso::Viewport {
@@ -115,86 +133,35 @@ impl Surface {
             depth: (0.0 as f32)..(1.0 as f32),
         };
 
-        // Here we just create the swapchain, image views, and framebuffers
-        // like we did in part 00, and store them in swapchain_stuff.
-        let swap_config = gfx::SwapchainConfig::from_caps(&caps, device.color_format);
-        let extent = swap_config.extent.to_extent();
-        let (swapchain, backbuffer) =  device.device.create_swapchain(&mut self.window_surface.surface, swap_config, None);
-
-        let depth_view: DepthView = DepthView::create(&device, Vector2f::new(extent.width as f32, extent.height as f32));
-
-        let (frame_views, framebuffers) = match backbuffer {
-            gfx::Backbuffer::Images(images) => {
-                let color_range = gfx::image::SubresourceRange {
-                    aspects: gfx::format::Aspects::COLOR,
-                    levels: 0..1,
-                    layers: 0..1,
-                };
-
-                let image_views = images
-                    .iter()
-                    .map(|image| {
-                        device.device
-                            .create_image_view(
-                                image,
-                                gfx::image::ViewKind::D2,
-                                device.color_format,
-                                gfx::format::Swizzle::NO,
-                                color_range.clone(),
-                            ).unwrap()
-                    }).collect::<Vec<_>>();
-
-                let fbos = image_views
-                    .iter()
-                    .map(|image_view| {
-                        device.device
-                            .create_framebuffer(&render_pass.raw_render_pass, vec![image_view, &depth_view.view], extent)
-                            .unwrap()
-                    }).collect();
-
-                (image_views, fbos)
-            }
-            gfx::Backbuffer::Framebuffer(fbo) => (Vec::new(), vec![fbo]),
-        };
+        // We can use `transmute_copy` because we will not use it again.
+        let (swapchain, backbuffer) =  unsafe { device.gpu.create_swapchain(&mut self.window_surface.surface, swap_config, Some(mem::transmute_copy(&self.swapchain))).unwrap() };
 
         // Store the new stuff.
        // swapchain_stuff = Some((swapchain, extent, frame_views, framebuffers));
         self.swapchain = swapchain;
-        self.images = frame_views;
-        self.framebuffers = framebuffers;
-        self.depth_view = depth_view;
+        self.backbuffer = Some(backbuffer);
         self.viewport = viewport;
+        self.extent = extent;
 
         // Revalidate.
         self.is_valid = true;
         self.did_rebuild = true;
     }
 
-    pub fn destroy(&mut self, device: &core::Device, command_dispatch: &mut command::CommandDispatch) {
-        // We want to wait for all queues to be idle and reset the command pool,
-        // so that we know that no commands are being executed while we destroy
-        // the swapchain.
-        device.device.wait_idle().expect("Failed to wait idle device!");
-        command_dispatch.command_pool.reset();
-
-        // Destroy all the old stuff.
-        for framebuffer in self.framebuffers.iter() {
-            device.device.destroy_framebuffer( unsafe { mem::transmute_copy(framebuffer) });
-        }
-
-        for image_view in self.images.iter() {
-            device.device.destroy_image_view(unsafe { mem::transmute_copy(image_view) });
-        }
-
-        device.device.destroy_swapchain(unsafe { mem::transmute_copy(&self.swapchain) });
-    }
-
-    pub fn next_index(&mut self, command_dispatch: &command::CommandDispatch) -> Option<gfx::SwapImageIndex> {
-        return self.swapchain.acquire_image(!0, gfx::FrameSync::Semaphore(&command_dispatch.frame_semaphore)).ok();
+    pub fn destroy_swapchain(&mut self) {
+        self.device_token.gpu.wait_idle().expect("Failed to wait idle device!");
     }
 
     pub fn get_size(&self) -> Vector2f {
         return Vector2f::new(self.viewport.rect.w as f32, self.viewport.rect.h as f32);
+    }
+
+}
+
+impl Drop for Surface {
+
+    fn drop(&mut self) {
+        unsafe { self.device_token.gpu.destroy_swapchain(mem::transmute_copy(&self.swapchain) ) };
     }
 
 }
@@ -207,7 +174,9 @@ pub struct RenderPass {
 
 impl RenderPass {
 
-    pub fn create(device: &core::Device) -> Self {
+    pub const STD_DEPTH_FORMAT: gfx::format::Format = gfx::format::Format::D32FloatS8Uint;
+
+    pub fn create_basic(device: &core::Device) -> Self {
 
         let raw_render_pass = {
 
@@ -220,7 +189,7 @@ impl RenderPass {
             };
 
             let depth_attachment = gfx::pass::Attachment {
-                format: Some(DEPTH_FORMAT),
+                format: Some(Self::STD_DEPTH_FORMAT),
                 samples: 1,
                 ops: gfx::pass::AttachmentOps::new(gfx::pass::AttachmentLoadOp::Clear, gfx::pass::AttachmentStoreOp::DontCare),
                 stencil_ops: gfx::pass::AttachmentOps::DONT_CARE,
@@ -242,12 +211,16 @@ impl RenderPass {
                     ..(gfx::image::Access::COLOR_ATTACHMENT_READ | gfx::image::Access::COLOR_ATTACHMENT_WRITE),
             };
 
-            device.device.create_render_pass(&[color_attachment, depth_attachment], &[subpass], &[dependency])
+            unsafe { device.gpu.create_render_pass(&[color_attachment, depth_attachment], &[subpass], &[dependency]).unwrap() }
 
         };
 
         return Self { raw_render_pass,  };
 
+    }
+
+    pub fn from_raw(raw: <Backend as gfx::Backend>::RenderPass) -> Self {
+        return Self { raw_render_pass: raw };
     }
 
 }
@@ -260,7 +233,6 @@ pub struct Graphics {
 
     pub device: core::Device,
     pub render_surface: Surface,
-    pub render_pass: RenderPass,
 
 }
 
@@ -271,103 +243,11 @@ impl Graphics {
 
         let mut window_surface: window::WindowSurface = window::WindowSurface::create(instance, window);
         let mut device: core::Device = core::Device::create(instance, &window_surface);
-        let render_pass: RenderPass = RenderPass::create(&device);
-        let render_surface: Surface = Surface::create(window_surface, &mut device, window, &render_pass);
+        let render_surface: Surface = Surface::create(window_surface, &mut device);
 
-        return Self { device, render_pass, render_surface };
-
-    }
-}
-
-/// Contains all graphics data neccessary for rendering.
-/// This includes the command buffer object.
-pub struct Renderer {
-
-    pub graphics: Graphics,
-    pub command_dispatch: command::CommandDispatch,
-
-}
-
-impl Renderer {
-
-    pub fn create(instance: &core::Instance, window: &window::Window) -> Self {
-        let graphics: Graphics = Graphics::create(instance, window);
-        let command_dispatch: command::CommandDispatch = command::CommandDispatch::create(&graphics.device);
-        return Self { graphics, command_dispatch };
-    }
-
-    pub fn render<F>(&mut self, clear_color: Color, mut f: F) -> bool
-        where F: FnMut(&mut render::Graphics, &mut command::Encoder) {
-        // Render Cycle.
-        return self.command_dispatch.dispatch_render(clear_color, &mut self.graphics, |graphics, encoder| {
-            f(graphics, encoder);
-        });
+        return Self { device, render_surface };
 
     }
-
-}
-
-/// The structure which contains depth image information for rendering depth properly.
-pub struct DepthView {
-
-    pub image: <Backend as gfx::Backend>::Image,
-    pub view: <Backend as gfx::Backend>::ImageView,
-    pub memory: <Backend as gfx::Backend>::Memory,
-
-}
-
-impl DepthView {
-
-    pub fn create(device: &core::Device, size: Vector2f) -> Self {
-
-        let kind = gfx::image::Kind::D2(size.x as gfx::image::Size, size.y as gfx::image::Size, 1, 1);
-
-        let memory_types = device.adapter.physical_device.memory_properties().memory_types;
-
-        let unbound_depth_image = device.device
-            .create_image(
-                kind,
-                1,
-                DEPTH_FORMAT,
-                gfx::image::Tiling::Optimal,
-                gfx::image::Usage::DEPTH_STENCIL_ATTACHMENT,
-                gfx::image::ViewCapabilities::empty(),
-            ).log_expect("Failed to create unbound depth image");
-
-        let image_req = device.device.get_image_requirements(&unbound_depth_image);
-
-        let device_type = memory_types
-            .iter()
-            .enumerate()
-            .position(|(id, memory_type)| {
-                image_req.type_mask & (1 << id) != 0
-                    && memory_type.properties.contains(gfx::memory::Properties::DEVICE_LOCAL)
-            }).log_expect("Failed to find device memory type")
-            .into();
-
-        let memory = device.device
-            .allocate_memory(device_type, image_req.size)
-            .log_expect("Failed to allocate depth image");
-
-        let image = device.device
-            .bind_image_memory(&memory, 0, unbound_depth_image)
-            .log_expect("Failed to bind depth image");
-
-        let view = device.device
-            .create_image_view(
-                &image,
-                gfx::image::ViewKind::D2,
-                DEPTH_FORMAT,
-                gfx::format::Swizzle::NO,
-                gfx::image::SubresourceRange {
-                    aspects: gfx::format::Aspects::DEPTH | gfx::format::Aspects::STENCIL,
-                    levels: 0..1,
-                    layers: 0..1,
-                },
-            ).log_expect("Failed to create image view");
-        return Self { image, view, memory };
-    }
-
 }
 
 #[derive(Copy, Clone)]
@@ -397,33 +277,42 @@ impl RenderTransform {
 
 }
 
-pub struct RenderCore<'a, 'b : 'a> {
+pub struct Dispatch<'a> {
     pub graphics: &'a mut Graphics,
     // We need to use a raw pointer as to avoid lifetimes. (I know... it's exciting)
-    pub encoder: &'a mut command::Encoder<'b>,
+    pub command_buffer: &'a mut command::CommandBuffer,
+
+    pub framebuffer: &'a Framebuffer,
 }
 
-impl<'a, 'b : 'a> RenderCore<'a, 'b> {
-    pub fn new(graphics: &'a mut Graphics, encoder: &'a mut command::Encoder<'b>) -> Self {
-        return Self { graphics, encoder };
+impl<'a> Dispatch<'a> {
+    pub fn new(graphics: &'a mut Graphics, command_buffer: &'a mut command::CommandBuffer, framebuffer: &'a Framebuffer) -> Self {
+        return Self { graphics, command_buffer, framebuffer };
+    }
+
+    pub fn begin_render_pass_inline<F>(&mut self, clear_color: Color, render_pass: &RenderPass, mut f: F)
+    where F: FnMut(&mut Graphics, &mut command::Encoder) {
+        let mut encoder = self.command_buffer.begin_draw(&self.framebuffer, render_pass, &self.graphics.render_surface, clear_color);
+        f(&mut self.graphics, &mut encoder);
     }
 }
 
-pub struct RenderCoreUnsafe {
+pub struct DispatchUnsafe {
     graphics: *mut Graphics,
     // We need to use a raw pointer as to avoid lifetimes. (I know... it's exciting)
-    encoder: *mut (),
+    command_buffer: *mut command::CommandBuffer,
+    framebuffer: *const Framebuffer,
 }
 
-impl RenderCoreUnsafe {
+impl DispatchUnsafe {
     /// FOR THIS TO BE USED SAFELY, ONLY ONE BORROW OF GRAPHICS AND ENCODER SHOULD BE DONE AT ONCE, AND THIS OBJECT SHOULD NOT LIVE LONGER THAN THE RENDER CYCLE!!!
-    pub fn new(graphics: *mut Graphics, encoder: *mut command::Encoder) -> Self {
-        return Self { graphics, encoder: encoder as *mut () };
+    pub fn new(graphics: *mut Graphics, command_buffer: *mut command::CommandBuffer, framebuffer: *const Framebuffer) -> Self {
+        return Self { graphics, command_buffer, framebuffer };
     }
 
     /// This is suicide...
-    pub unsafe fn make_safe(&mut self) -> &mut RenderCore {
-        return &mut *((self as *mut RenderCoreUnsafe) as *mut RenderCore);
+    pub unsafe fn make_safe(&mut self) -> &mut Dispatch {
+        return &mut *((self as *mut DispatchUnsafe) as *mut Dispatch);
     }
 
     pub unsafe fn graphics(&self) -> &Graphics {
@@ -436,15 +325,15 @@ impl RenderCoreUnsafe {
         return &mut *self.graphics;
     }
 
-    pub unsafe fn encoder(&self) -> &command::Encoder {
-        return &*(self.encoder as *mut command::Encoder);
+    pub unsafe fn command_buffer(&self) -> &command::CommandBuffer {
+        return &*self.command_buffer;
     }
 
-    pub unsafe fn encoder_mut(&mut self) -> &mut command::Encoder {
+    pub unsafe fn command_bufferr_mut(&mut self) -> &mut command::CommandBuffer {
         // We are downgrading to const.
-        return &mut *(self.encoder as *mut command::Encoder);
+        return &mut *self.command_buffer;
     }
 }
 
-unsafe impl Send for RenderCoreUnsafe {}
-unsafe impl Sync for RenderCoreUnsafe {}
+unsafe impl Send for DispatchUnsafe {}
+unsafe impl Sync for DispatchUnsafe {}

@@ -1,8 +1,5 @@
 #version 450
 
-   const float MAXZ =  10000.0;
-   const float MAX_REL_Z = 1.0;
-
    #extension GL_ARB_separate_shader_objects : enable
 
    const int BONES_PER_VERTEX = 4;
@@ -23,7 +20,6 @@
    layout(location = 2) in vec2 uv_pos;
    layout(location = 3) in ivec4 bone_ids;
    layout(location = 4) in vec4 bone_weights;
-   layout(location = 5) in int v_material_index;
 
    layout(push_constant) uniform Transform {
        mat4 model;
@@ -38,9 +34,6 @@
    layout(location = 1) out vec3 norm;
    layout(location = 2) out vec3 frag_pos;
    layout(location = 3) out vec3 view_pos;
-   layout(location = 4) out flat int material_index;
-
-   layout(location = 5) out flat mat4 view_matrix;
 
    void main() {
 
@@ -60,8 +53,6 @@
        mat4 local_transform = model;
        mat4 camera_transform = projection * view;
        vec4 pos = camera_transform * local_transform * vec4(position, 1.0);
-       float zpos = (pos.z / MAXZ) * MAX_REL_Z;
-      // gl_Position = vec4(pos.xy, zpos, pos.w);
       gl_Position = pos;
 
       uv = uv_pos;
@@ -69,8 +60,5 @@
       frag_pos = vec3(local_transform * vec4(position, 1.0));
       mat4 camera = inverse(view);
       view_pos = vec3(camera[3][0], camera[3][1], camera[3][2]);
-      material_index = v_material_index;
-
-      view_matrix = view;
 
    }

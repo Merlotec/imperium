@@ -2,11 +2,14 @@ use crate::*;
 
 use spatial::*;
 use spatial::light::LightsList;
-use spatial::material::MaterialsList;
+
+use std::sync::Arc;
+use std::cell::RefCell;
+use std::sync::Mutex;
 
 use gfx::Device as GfxDevice;
 
-const MAX_DESCRIPTORS: usize = 1000;
+const MAX_DESCRIPTORS: usize = 1;
 
 const MAX_BONES: usize = 100;
 
@@ -14,7 +17,7 @@ const MAX_BONES: usize = 100;
 #[repr(C)]
 pub struct BoneList {
 
-    pub count: i32,
+    pub count: Al16<i32>,
     pub bones: [Matrix4f; MAX_BONES],
 
 }
@@ -22,10 +25,12 @@ pub struct BoneList {
 impl BoneList {
 
     pub fn new() -> BoneList {
-        return BoneList { count: 0, bones: [Matrix4f::identity(); MAX_BONES] };
+        return BoneList { count: Al16::new(0), bones: [Matrix4f::identity(); MAX_BONES] };
     }
 
 }
+
+pub static mut MATERIAL_DESCRIPTOR_LAYOUT: Option<Arc<pipeline::DescriptorSetLayout>> = None;
 
 /// The structure responsible for rendering mesh objects.
 /// This is invoked by the scene when a mesh should be rendered.
@@ -34,7 +39,7 @@ pub struct MeshRenderPipeline {
     pub pipeline: pipeline::PipelineController,
     pub descriptor_pool: pipeline::DescriptorPool,
     pub intrinsic_descriptor_interface: pipeline::DescriptorSetInterface,
-    pub texture_input_desc: pipeline::DescriptorSetLayout,
+    pub material_input_layout: Arc<pipeline::DescriptorSetLayout>,
     pub bone_uniform: buffer::Buffer,
 
     pub is_bound: bool,
@@ -49,16 +54,20 @@ impl MeshRenderPipeline {
             (&bone_uniform, pipeline::ShaderStage::Vertex),
             (&lights_uniform, pipeline::ShaderStage::Fragment),
         ], device);
-        let texture_input_desc: pipeline::DescriptorSetLayout = pipeline::DescriptorSetLayout::create(&[
-            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment),
-            (&pipeline::ShaderInputDescriptor::sampler_descriptor(), pipeline::ShaderStage::Fragment),
+        let material_input_layout: Arc<pipeline::DescriptorSetLayout> = Arc::new(pipeline::DescriptorSetLayout::create(&[
             (&pipeline::ShaderInputDescriptor::uniform_buffer_descriptor(), pipeline::ShaderStage::Fragment),
-        ], device);
+            (&pipeline::ShaderInputDescriptor::sampler_descriptor(), pipeline::ShaderStage::Fragment),
+            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment),
+            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment),
+            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment),
+            (&pipeline::ShaderInputDescriptor::image_descriptor(), pipeline::ShaderStage::Fragment),
+        ], device));
         log!(debug, 4, "Attempting to create descriptor sets.");
 
-        let mut descriptor_pool: pipeline::DescriptorPool = pipeline::DescriptorPool::new(MAX_DESCRIPTORS, &[
-            (&instrinsic_set_layout, 1),
-            (&texture_input_desc, MAX_DESCRIPTORS - 1),
+        unsafe { MATERIAL_DESCRIPTOR_LAYOUT = Some(material_input_layout.clone()) };
+
+        let mut descriptor_pool: pipeline::DescriptorPool = pipeline::DescriptorPool::new(1, &[
+            (&instrinsic_set_layout, 1)
         ], device);
         let intrinsic_descriptor_set: pipeline::DescriptorSet = pipeline::DescriptorSet::with_inputs(&[
             (&bone_uniform, 0),
@@ -71,7 +80,7 @@ impl MeshRenderPipeline {
 
         //shader_input.write_input(&render::TextureSampler::new(device), 3, device);
 
-        let pipeline_layout = pipeline::PipelineLayout::create(&[&intrinsic_descriptor_interface.layout, &texture_input_desc], &[(gfx::pso::ShaderStageFlags::VERTEX, 0..(Self::num_push_constants() as u32))], device);
+        let pipeline_layout = pipeline::PipelineLayout::create(&[&intrinsic_descriptor_interface.layout, material_input_layout.as_ref()], &[(gfx::pso::ShaderStageFlags::VERTEX, 0..(Self::num_push_constants() as u32))], device);
 
         let vertex_shader_module = device.load_shader_raw(include_bytes!("../../../shaders/bin/std_mesh_v.spv")).expect("Fatal Error: Failed to create model vertex shader.");
         let fragment_shader_module = device.load_shader_raw(include_bytes!("../../../shaders/bin/std_mesh_f.spv")).expect("Fatal Error: Failed to create model fragment shader.");
@@ -107,7 +116,7 @@ impl MeshRenderPipeline {
                 front_face: gfx::pso::FrontFace::CounterClockwise,
                 depth_clamping: false,
                 depth_bias: None,
-                conservative: false,
+                conservative: true,
             };
 
             let mut pipeline_desc = gfx::pso::GraphicsPipelineDesc::new(
@@ -170,21 +179,13 @@ impl MeshRenderPipeline {
                     offset: 48,
                 },
             });
-            pipeline_desc.attributes.push(gfx::pso::AttributeDesc {
-                location: 5,
-                binding: 0,
-                element: gfx::pso::Element {
-                    format: gfx::format::Format::R32Int,
-                    offset: 64,
-                },
-            });
 
             pipeline_desc.depth_stencil = gfx::pso::DepthStencilDesc {
                 depth: gfx::pso::DepthTest::On {
                     fun: gfx::pso::Comparison::Less,
                     write: true,
                 },
-                depth_bounds: true,
+                depth_bounds: false,
                 stencil: gfx::pso::StencilTest::default(),
             };
             log!(debug, 3, "Attempting to create mesh render pipeline.");
@@ -193,56 +194,34 @@ impl MeshRenderPipeline {
 
         let pipeline = pipeline::PipelineController::new(pipeline_object, pipeline_layout);
         log!(debug, 3, "Successfully created mesh render pipeline.");
-        return MeshRenderPipeline { pipeline, descriptor_pool, intrinsic_descriptor_interface, texture_input_desc, bone_uniform, is_bound: false };
+        return MeshRenderPipeline { pipeline, descriptor_pool, intrinsic_descriptor_interface, material_input_layout, bone_uniform, is_bound: false };
+    }
+
+    pub fn bind_pipeline(&self, command_buffer: &mut command::CommandBuffer) {
+        self.pipeline.bind(command_buffer);
+    }
+
+    pub fn bind_descriptors(&self, material_set: &pipeline::DescriptorSet, encoder: &mut command::Encoder) {
+        self.pipeline.bind_descriptor_sets(&[&self.intrinsic_descriptor_interface.set, &material_set], encoder);
     }
 
     /// Renders the vertex input data with a texture.
     /// The texture in this case part of the ShaderInputSet object.
-    /// Each texture rendering object should construct on of these using the layout specified in the 'texture_input_desc' field.
+    /// Each texture rendering object should construct on of these using the layout specified in the 'material_set' field.
     /// This layout is ()
-    pub fn render(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transform: render::RenderTransform, graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
-        self.pipeline.bind(encoder);
-        self.pipeline.bind_descriptor_sets(&[&self.intrinsic_descriptor_interface.set, texture_set], encoder);
-        encoder.pass.bind_vertex_buffers(0, vec![(&vertex_input.vertex_buffer.buf, 0)]);
-        if let Some(index_buffer) = vertex_input.index_buffer {
-            encoder.pass.push_graphics_constants(&self.pipeline.layout.layout, gfx::pso::ShaderStageFlags::VERTEX, 0, unsafe { std::slice::from_raw_parts(&transform as *const render::RenderTransform as *const u32, Self::num_push_constants()) });
-            encoder.pass.bind_index_buffer(gfx::buffer::IndexBufferView { buffer: &index_buffer.buf, offset: 0, index_type: gfx::IndexType::U32 });
-            encoder.pass.draw_indexed(0..index_buffer.count as u32, 0, 0..vertex_input.vertex_buffer.count as u32);
-        } else {
-            encoder.pass.push_graphics_constants(&self.pipeline.layout.layout, gfx::pso::ShaderStageFlags::VERTEX, 0, unsafe { std::slice::from_raw_parts(&transform as *const render::RenderTransform as *const u32, Self::num_push_constants()) });
-            encoder.pass.draw(0..vertex_input.vertex_buffer.count as u32, 0..1);
-        }
-
-
-    }
-
-    pub fn render_batch(&mut self, vertex_input: &pipeline::VertexInput, texture_set: &pipeline::DescriptorSet, transforms: &[render::RenderTransform], graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
-        if !self.is_bound {
-            self.pipeline.bind(encoder);
-            self.is_bound = true;
-        }
-        self.pipeline.bind_descriptor_sets(&[&self.intrinsic_descriptor_interface.set, texture_set], encoder);
-        encoder.pass.bind_vertex_buffers(0, vec![(&vertex_input.vertex_buffer.buf, 0)]);
-
-        if let Some(index_buffer) = vertex_input.index_buffer {
-            encoder.pass.bind_index_buffer(gfx::buffer::IndexBufferView { buffer: &index_buffer.buf, offset: 0, index_type: gfx::IndexType::U32 });
-            for transform in transforms {
-                encoder.pass.push_graphics_constants(&self.pipeline.layout.layout, gfx::pso::ShaderStageFlags::VERTEX, 0, unsafe { std::slice::from_raw_parts(transform as *const render::RenderTransform as *const u32, Self::num_push_constants()) });
-                encoder.pass.draw_indexed(0..index_buffer.count as u32, 0, 0..vertex_input.vertex_buffer.count as u32);
-            }
-        } else {
-            for transform in transforms {
-                encoder.pass.push_graphics_constants(&self.pipeline.layout.layout, gfx::pso::ShaderStageFlags::VERTEX, 0, unsafe { std::slice::from_raw_parts(transform as *const render::RenderTransform as *const u32, Self::num_push_constants()) });
+    pub fn render(&mut self, vertex_input: &pipeline::VertexInput, material_set: &pipeline::DescriptorSet, transform: render::RenderTransform, encoder: &mut command::Encoder) {
+        self.bind_descriptors(material_set, encoder);
+        unsafe {
+            encoder.pass.bind_vertex_buffers(0, vec![(&vertex_input.vertex_buffer.buf, 0)]);
+            if let Some(index_buffer) = vertex_input.index_buffer {
+                encoder.pass.push_graphics_constants(&self.pipeline.layout.layout, gfx::pso::ShaderStageFlags::VERTEX, 0, unsafe { std::slice::from_raw_parts(&transform as *const render::RenderTransform as *const u32, Self::num_push_constants()) });
+                encoder.pass.bind_index_buffer(gfx::buffer::IndexBufferView { buffer: &index_buffer.buf, offset: 0, index_type: gfx::IndexType::U32 });
+                encoder.pass.draw_indexed(0..index_buffer.count as u32, 0, 0..1);
+            } else {
+                encoder.pass.push_graphics_constants(&self.pipeline.layout.layout, gfx::pso::ShaderStageFlags::VERTEX, 0, unsafe { std::slice::from_raw_parts(&transform as *const render::RenderTransform as *const u32, Self::num_push_constants()) });
                 encoder.pass.draw(0..vertex_input.vertex_buffer.count as u32, 0..1);
             }
         }
-
-
-    }
-
-    /// Called when the renderer needs to be reset (i.e. when another renderer's context is set up).
-    pub fn reset(&mut self) {
-        self.is_bound = false;
     }
 
     const fn num_push_constants() -> usize {

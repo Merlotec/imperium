@@ -17,7 +17,7 @@ impl PipelineLayout {
         for il in input_layout {
             layouts.push(&il.set_layout);
         }
-        let layout = device.device.create_pipeline_layout(layouts, push_constant_ranges);
+        let layout = unsafe { device.gpu.create_pipeline_layout(layouts, push_constant_ranges).unwrap() };
         return PipelineLayout { layout };
     }
 
@@ -26,7 +26,7 @@ impl PipelineLayout {
         for set in input_sets {
             sets.push(&set.desc_set);
         }
-        encoder.pass.bind_graphics_descriptor_sets(&self.layout, 0, sets, &[]);
+        unsafe { encoder.pass.bind_graphics_descriptor_sets(&self.layout, 0, sets, &[]) };
     }
 
 }
@@ -41,7 +41,7 @@ impl Pipeline {
 
     pub fn create(pipeline_desc: gfx::pso::GraphicsPipelineDesc<Backend>, device: &core::Device) -> Result<Pipeline, &'static str> {
 
-        let pipeline = device.device.create_graphics_pipeline(&pipeline_desc, None);
+        let pipeline = unsafe { device.gpu.create_graphics_pipeline(&pipeline_desc, None) };
         if let Ok(graphics_pipeline) = pipeline {
             return Ok(Pipeline { graphics_pipeline });
         } else {
@@ -49,8 +49,8 @@ impl Pipeline {
         }
     }
 
-    pub fn bind(&self, encoder: &mut command::Encoder) {
-        encoder.pass.bind_graphics_pipeline(&self.graphics_pipeline);
+    pub fn bind(&self, command_buffer: &mut command::CommandBuffer) {
+        unsafe { command_buffer.cmd.bind_graphics_pipeline(&self.graphics_pipeline) };
     }
 
 }
@@ -72,8 +72,8 @@ impl PipelineController {
         self.layout.bind_descriptor_sets(input_sets, encoder);
     }
 
-    pub fn bind(&self, encoder: &mut command::Encoder) {
-        self.pipeline.bind(encoder);
+    pub fn bind(&self, command_buffer: &mut command::CommandBuffer) {
+        self.pipeline.bind(command_buffer);
     }
 
 }
@@ -128,10 +128,10 @@ impl DescriptorSetLayout {
         }
 
         // TODO: what is a descriptor set, what is the layout?
-        let set_layout = device.device.create_descriptor_set_layout(
+        let set_layout = unsafe { device.gpu.create_descriptor_set_layout(
             &binding_data,
             &[],
-        );
+        ).unwrap() };
         return DescriptorSetLayout { set_layout, bindings };
     }
 
@@ -156,10 +156,10 @@ impl DescriptorPool {
             }
         }
 
-        let mut pool = device.device.create_descriptor_pool(
+        let mut pool = unsafe { device.gpu.create_descriptor_pool(
             max_sets,
             &desc_ranges,
-        );
+        ).unwrap() };
         return DescriptorPool { pool };
     }
 
@@ -180,7 +180,7 @@ impl DescriptorSet {
     /// The layout of the set needs to be provided in order to create the actual descriptor set.
     pub fn new(input_layout: &DescriptorSetLayout, descriptor_pool: &mut DescriptorPool, device: &core::Device) -> Result<DescriptorSet, &'static str> {
 
-        if let Ok(desc_set) = descriptor_pool.pool.allocate_set(&input_layout.set_layout) {
+        if let Ok(desc_set) = unsafe { descriptor_pool.pool.allocate_set(&input_layout.set_layout) } {
             return Ok(DescriptorSet { desc_set });
         } else {
              return Err("Failed to create descriptor set. Perhaps the descriptor pool was not initialized properly?");
@@ -206,7 +206,7 @@ impl DescriptorSet {
                 }
             }
 
-            device.device.write_descriptor_sets(writes);
+            unsafe { device.gpu.write_descriptor_sets(writes) };
         }
 
         return Ok(descriptor_set);
@@ -225,33 +225,37 @@ impl DescriptorSet {
             }
         }
 
-        device.device.write_descriptor_sets(writes);
+        unsafe { device.gpu.write_descriptor_sets(writes) };
     }
 
     pub fn bind(&self, pipeline_layout: &<Backend as gfx::Backend>::PipelineLayout, encoder: &mut command::Encoder) {
-        encoder.pass.bind_graphics_descriptor_sets(&pipeline_layout, 0, vec![&self.desc_set], &[]);
+        unsafe { encoder.pass.bind_graphics_descriptor_sets(&pipeline_layout, 0, vec![&self.desc_set], &[]) };
     }
 
     pub fn write_descriptor(&self, descriptor: Option<gfx::pso::Descriptor<Backend>>, binding: u32, device: &core::Device) {
-        device.device.write_descriptor_sets(vec![
-            gfx::pso::DescriptorSetWrite {
-                set: &self.desc_set,
-                binding,
-                array_offset: 0,
-                descriptors: descriptor,
-            }
-        ]);
+        unsafe {
+            device.gpu.write_descriptor_sets(vec![
+                gfx::pso::DescriptorSetWrite {
+                    set: &self.desc_set,
+                    binding,
+                    array_offset: 0,
+                    descriptors: descriptor,
+                }
+            ]);
+        }
     }
 
     pub fn write_input(&self, shader_input: &ShaderInput, binding: u32, device: &core::Device) {
-        device.device.write_descriptor_sets(vec![
-            gfx::pso::DescriptorSetWrite {
-                set: &self.desc_set,
-                binding,
-                array_offset: 0,
-                descriptors: shader_input.get_descriptor(),
-            }
-        ]);
+        unsafe {
+            device.gpu.write_descriptor_sets(vec![
+                gfx::pso::DescriptorSetWrite {
+                    set: &self.desc_set,
+                    binding,
+                    array_offset: 0,
+                    descriptors: shader_input.get_descriptor(),
+                }
+            ]);
+        }
     }
 
 }
@@ -344,7 +348,7 @@ pub struct TextureSampler {
 impl TextureSampler {
 
     pub fn new(device: &core::Device) -> TextureSampler {
-        let sampler = device.device.create_sampler(gfx::image::SamplerInfo::new(gfx::image::Filter::Linear, gfx::image::WrapMode::Clamp));
+        let sampler = unsafe { device.gpu.create_sampler(gfx::image::SamplerInfo::new(gfx::image::Filter::Linear, gfx::image::WrapMode::Tile)).unwrap() };
         return TextureSampler { sampler };
     }
 

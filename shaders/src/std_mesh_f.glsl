@@ -5,12 +5,11 @@ const int MAX_LIGHTS = 20;
 // The specular exponent that will exist if the metallic value is exactly 0.
 const float MAX_SPECULAR = 128;
 
+const float PI = 3.14159265359;
+
 struct LightData {
     vec3 pos;
     vec3 color;
-    float ambient;
-    float diffuse;
-    float specular;
 };
 
 struct LightsList {
@@ -22,11 +21,16 @@ const int MAX_MATERIALS = 20;
 const float DEFAULT_MATERIAL_BRIGHTNESS = 1.0;
 const float DEFAULT_MATERIAL_ROUGHNESS = 0.6;
 
+const int USE_ALBEDO_BIT = 0x01;
+const int USE_NORMAL_BIT = 0x02;
+const int USE_METALLIC_BIT = 0x04;
+const int USE_ROUGHNESS_BIT = 0x10;
+
 struct Material {
-    vec3 ambient;
-    vec3 diffuse;
-    vec3 specular;
-    float roughness;
+    vec3 albedo_global;
+    int options;
+    float metallic_global;
+    float roughness_global;
 };
 
 struct MaterialsList {
@@ -38,72 +42,148 @@ layout(location = 0) in vec2 uv;
 layout(location = 1) in vec3 norm;
 layout(location = 2) in vec3 frag_pos;
 layout(location = 3) in vec3 view_pos;
-layout(location = 4) in flat int material_index;
-
-layout(location = 5) in flat mat4 view_matrix;
 
 layout(set = 0, binding = 1) uniform u_LightList {
     LightsList lights;
 };
 
-layout(set = 1, binding = 0) uniform texture2D colormap;
-layout(set = 1, binding = 1) uniform sampler colorsampler;
-
-layout(set = 1, binding = 2) uniform u_MaterialList {
-    MaterialsList materials;
+layout(set = 1, binding = 0) uniform u_Material {
+    Material material;
 };
+
+layout(set = 1, binding = 1) uniform sampler samp;
+layout(set = 1, binding = 2) uniform texture2D albedo;
+layout(set = 1, binding = 3) uniform texture2D normal;
+layout(set = 1, binding = 4) uniform texture2D metallic;
+layout(set = 1, binding = 5) uniform texture2D roughness;
 
 layout(location = 0) out vec4 target;
 
-Material get_material(int index) {
-    if (index < materials.count && index >= 0) {
-        return materials.data[index];
-    }
-    return Material(vec3(DEFAULT_MATERIAL_BRIGHTNESS), vec3(DEFAULT_MATERIAL_BRIGHTNESS), vec3(DEFAULT_MATERIAL_BRIGHTNESS), DEFAULT_MATERIAL_ROUGHNESS);
+struct Frag {
+    vec3 albedo;
+    vec3 normal;
+    float metallic;
+    float roughness;
+};
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-vec4 calculate_lighting(vec3 view_dir, Material material) {
+float DistributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a      = roughness*roughness;
+    float a2     = a*a;
+    float NdotH  = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
 
-    vec3 total_ambient = vec3(0, 0, 0);
-    vec3 total_diffuse = vec3(0, 0, 0);
-    vec3 total_specular = vec3(0, 0, 0);
+    float num   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
 
-    for (int i = 0; i < lights.count; i++) {
+    return num / denom;
+}
 
-        //vec3 light_pos = vec3(view_matrix * vec4(lights.data[i].pos, 1.0));
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
 
-        vec3 light_dir = normalize(lights.data[i].pos - frag_pos);
+    float num   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
 
-        // Ambient
-        vec3 ambient_color = material.ambient * lights.data[i].color * lights.data[i].ambient;
+    return num / denom;
+}
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
 
-        // Diffuse
-        float diffuse_factor = max(dot(normalize(norm), light_dir), 0.0);
-        vec3 diffuse_color;
-        diffuse_color = lights.data[i].color * lights.data[i].diffuse * material.diffuse * diffuse_factor;
+    return ggx1 * ggx2;
+}
 
-        // Specular
-        vec3 reflect_dir = normalize(reflect(-light_dir, norm));
-        float specular_exponent = MAX_SPECULAR - (MAX_SPECULAR * min(material.roughness, 1.0));
-        float spec_factor = pow(max(dot(view_dir, reflect_dir), 0.0), 32);
-        vec3 specular_color = material.specular * spec_factor * lights.data[i].specular;
+vec4 fwd_render_frag(Frag frag) {
 
-        total_ambient += ambient_color;
-        total_diffuse += diffuse_color;
-        total_specular += specular_color;
+    vec3 N = normalize(norm);
+    vec3 V = normalize(view_pos - frag_pos);
+
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, frag.albedo, frag.metallic);
+
+    // reflectance equation
+    vec3 Lo = vec3(0.0);
+    for(int i = 0; i < lights.count; ++i)
+    {
+        // calculate per-light radiance
+        vec3 L = normalize(lights.data[i].pos - frag_pos);
+        vec3 H = normalize(V + L);
+        float distance    = length(lights.data[i].pos  - frag_pos);
+        float attenuation = 1.0 / (distance * distance);
+        vec3 radiance     = lights.data[i].color * attenuation;
+
+        // cook-torrance brdf
+        float NDF = DistributionGGX(N, H, frag.roughness);
+        float G   = GeometrySmith(N, V, L, frag.roughness);
+        vec3 F    = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+        vec3 kS = F;
+        vec3 kD = vec3(1.0) - kS;
+        kD *= 1.0 - frag.metallic;
+
+        vec3 numerator    = NDF * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
+        vec3 specular     = numerator / max(denominator, 0.001);
+
+        // add to outgoing radiance Lo
+        float NdotL = max(dot(N, L), 0.0);
+        Lo += (kD * frag.albedo / PI + specular) * radiance * NdotL;
     }
-    return vec4(total_ambient + total_diffuse + total_specular, 1.0);
+
+    vec3 ambient = vec3(0.03) * frag.albedo;
+    vec3 color = ambient + Lo;
+
+    color = color / (color + vec3(1.0));
+    color = pow(color, vec3(1.0/2.2));
+
+    return vec4(color, 1.0);
 }
 
 void main() {
 
     // Adjust texture coordinates.
-    vec2 tex_coords = vec2(uv.x, 1.0 - uv.y);
-    vec3 view_dir = normalize(view_pos - frag_pos);
-    Material material = get_material(material_index);
-    target = texture(sampler2D(colormap, colorsampler), tex_coords) * calculate_lighting(view_dir, material);
+   // vec2 tex_coords = vec2(uv.x, 1.0 - uv.y);
+    vec2 tex_coords = uv;
 
-    //target = texture(sampler2D(colormap, colorsampler), uv);
+    Frag frag;
 
+    if ((material.options & USE_ALBEDO_BIT) != 0) {
+        frag.albedo = texture(sampler2D(albedo, samp), tex_coords).xyz;
+    } else {
+        frag.albedo = material.albedo_global;
+    }
 
+    if ((material.options & USE_NORMAL_BIT) != 0) {
+        frag.normal = texture(sampler2D(normal, samp), tex_coords).xyz;
+    } else {
+        frag.normal = norm;
+    }
+
+    if ((material.options & USE_METALLIC_BIT) != 0) {
+        frag.metallic = texture(sampler2D(metallic, samp), tex_coords).x;
+    } else {
+        frag.metallic = material.metallic_global;
+    }
+
+    if ((material.options & USE_ROUGHNESS_BIT) != 0) {
+        frag.roughness = texture(sampler2D(roughness, samp), tex_coords).x;
+    } else {
+        frag.roughness = material.roughness_global;
+    }
+
+    target = fwd_render_frag(frag);
+
+   // target = texture(sampler2D(albedo, samp), uv);
 }

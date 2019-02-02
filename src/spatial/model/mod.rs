@@ -1,14 +1,16 @@
 use crate::*;
 
-use std;
 use std::convert::AsRef;
 use ai::*;
 use std::ptr::*;
+use std::mem;
 use libc::*;
-
 use std::rc::Rc;
+use std::sync::Arc;
+use specs::Builder;
 
 use spatial::pipe::mesh::MeshRenderPipeline;
+use spatial::material;
 
 /// The basic component which can render a mesh to the screen.
 /// This contains vertex buffer data as well as texture data.
@@ -22,64 +24,35 @@ pub struct BufferedMesh {
     /// The optional index buffer type.
     pub index_buffer: Option<Res<buffer::Buffer>>,
 
-    /// The texture buffer object which contains the texture image.
-    pub texture_buffer: Res<buffer::TextureBuffer>,
-
-    /// The descriptor set which is bound to the shader to efficiently provide texture data and other information.
-    pub texture_input_set: pipeline::DescriptorSet,
-
 }
 
 impl BufferedMesh {
 
     /// Creates a enw mesh component from a mesh object.
     /// This mesh can be loaded from a model file.
-    pub fn new(mesh: &Mesh, texture: &texture::Texture, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> BufferedMesh {
-        return BufferedMesh::create(&mesh.vertices, None, texture, pipeline, renderer);
+    pub fn new(mesh: &Mesh, device: &core::Device) -> BufferedMesh {
+        return BufferedMesh::create(&mesh.vertices, Some(mesh.indices.as_slice()), device);
     }
 
     /// Creates a new mesh component from the specified raw vertex buffer, index buffer and texture.
     /// The scene and render objects are required in order to load the mesh properly.
-    pub fn create(verts: &[ModelVertex], indices: Option<&[u32]>, texture: &texture::Texture, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> BufferedMesh {
-        let vertex_buffer: Res<buffer::Buffer> = Res::Val(buffer::Buffer::alloc_vertex(verts, &renderer.graphics.device));
+    pub fn create(verts: &[ModelVertex], indices: Option<&[u32]>, device: &core::Device) -> BufferedMesh {
+        let vertex_buffer: Res<buffer::Buffer> = Res::Val(buffer::Buffer::alloc_vertex(verts, device));
         let mut index_buffer: Option<Res<buffer::Buffer>> = None;
         if let Some(indices) = indices {
-            index_buffer = Some(Res::Val(buffer::Buffer::alloc(indices, gfx::buffer::Usage::INDEX, gfx::memory::Properties::CPU_VISIBLE, &renderer.graphics.device)));
+            index_buffer = Some(Res::Val(buffer::Buffer::alloc(indices, gfx::buffer::Usage::INDEX, gfx::memory::Properties::CPU_VISIBLE, device)));
         }
-        let texture_buffer: Res<buffer::TextureBuffer> = Res::Val(buffer::TextureBuffer::create(&texture, &mut renderer.graphics.device, &mut renderer.command_dispatch));
-        let texture_sampler = pipeline::TextureSampler::new(&renderer.graphics.device);
-        // We do not supply a material buffer by default, however we do ensure that the shader knows that there are no materials.
-        // The fist byte is the array size counter.
-        let material_buffer: buffer::Buffer = buffer::Buffer::alloc_uniform(&[0i32], &mut renderer.graphics.device);
-        let texture_input_set: pipeline::DescriptorSet = pipeline::DescriptorSet::with_inputs(&[
-            (texture_buffer.as_ref(), 0),
-            (&texture_sampler, 1),
-            (&material_buffer, 2),
-        ], &pipeline.texture_input_desc, &mut pipeline.descriptor_pool, &renderer.graphics.device).log_expect("Failed to create texture descriptor set for mesh component.");
-        return BufferedMesh { vertex_buffer, index_buffer, texture_buffer, texture_input_set };
+        return BufferedMesh { vertex_buffer, index_buffer };
     }
 
-    pub fn set_material_input(&self, input: &pipeline::ShaderInput, device: &core::Device) {
-        self.texture_input_set.write_input(input, 2, device);
-    }
 
     /// Creates a new BufferedMesh from the specified vertex buffer, index buffer and texture buffer.
-    /// The scene and renderer object are needed to create the descriptor set that properly represents the scene.
-    pub fn from_raw_buffers(vertex_buffer: Res<buffer::Buffer>, index_buffer: Option<Res<buffer::Buffer>>, texture_buffer: Res<buffer::TextureBuffer>, pipeline: &mut MeshRenderPipeline, renderer: &mut render::Renderer) -> Self {
-        let texture_sampler = pipeline::TextureSampler::new(&renderer.graphics.device);;
-        let texture_input_set: pipeline::DescriptorSet = pipeline::DescriptorSet::with_inputs(&[
-            (texture_buffer.as_ref(), 0),
-            (&texture_sampler, 1)
-        ], &pipeline.texture_input_desc, &mut pipeline.descriptor_pool, &renderer.graphics.device).log_expect("Failed to create texture descriptor set for mesh component.");
-        return BufferedMesh { vertex_buffer, index_buffer, texture_buffer, texture_input_set };
+    /// The scene and graphics object are needed to create the descriptor set that properly represents the scene.
+    pub fn from_raw_buffers(vertex_buffer: Res<buffer::Buffer>, index_buffer: Option<Res<buffer::Buffer>>) -> Self {
+        return BufferedMesh { vertex_buffer, index_buffer };
     }
-}
 
-impl spatial::RenderComponent for BufferedMesh {
-
-    type RenderPipeline = spatial::pipe::mesh::MeshRenderPipeline;
-
-    fn render(&mut self, transform: render::RenderTransform, pipeline: &mut Self::RenderPipeline, render_core: &mut render::RenderCore) {
+    pub fn render(&mut self, transform: render::RenderTransform, materials_desc: &pipeline::DescriptorSet, pipeline: &mut spatial::pipe::mesh::MeshRenderPipeline, encoder: &mut command::Encoder) {
         let index_buffer: Option<&buffer::Buffer> = {
             if let Some(ibuf) = self.index_buffer.as_ref() {
                 Some(ibuf.as_ref())
@@ -88,9 +61,8 @@ impl spatial::RenderComponent for BufferedMesh {
             }
         };
         let vertex_input = pipeline::VertexInput { vertex_buffer: &self.vertex_buffer, index_buffer };
-        pipeline.render(&vertex_input, &self.texture_input_set, transform, render_core.graphics, render_core.encoder);
+        pipeline.render(&vertex_input, materials_desc, transform, encoder);
     }
-
 }
 
 impl specs::Component for BufferedMesh {
@@ -180,20 +152,18 @@ pub struct ModelVertex {
     pub uv: Vector2f,
     pub bone_ids: Vector4i,
     pub bone_weights: Vector4f,
-    pub material_index: i32,
 
 }
 
 impl ModelVertex {
 
-    pub fn new(pos: Vector3f, normal: Vector3f, uv: Vector2f, material_index: i32) -> ModelVertex {
+    pub fn new(pos: Vector3f, normal: Vector3f, uv: Vector2f) -> ModelVertex {
         return ModelVertex {
             pos,
             normal,
             uv,
             bone_ids: Vector4i::new(-1, -1, -1, -1),
             bone_weights: Vector4f::zero(),
-            material_index
         };
     }
 
@@ -213,7 +183,7 @@ impl ModelVertex {
 pub struct Mesh {
 
     pub vertices: Vec<ModelVertex>,
-    pub indices: Vec<u16>,
+    pub indices: Vec<u32>,
     pub material_index: usize,
     pub skeleton: Skeleton,
     pub ai_mesh: *mut AiMesh,
@@ -223,10 +193,10 @@ pub struct Mesh {
 impl Mesh {
 
     pub fn from_file(path: &str, mesh_index: usize) -> Result<Self, &'static str> {
-        if let Some(model) = Model::from_file(path) {
+        if let Ok(model) = Model::from_file(path) {
             return model.meshes.get(mesh_index).cloned().ok_or("The index specified does not exist.");
         }
-        return Err("Failed to load mesh from path.");
+        return Err("Failed to load mesh from path");
     }
 
     /**
@@ -255,22 +225,20 @@ impl Mesh {
             }
 
             // Construt and push the ModelVertex.
-            vertices.push(ModelVertex::new(pos, normal, uv, -1));
+            vertices.push(ModelVertex::new(pos, normal, uv));
         }
-
-        let mut indices: Vec<u16> = Vec::with_capacity((*ai_mesh).num_faces as usize);
+        let mut indices: Vec<u32> = Vec::with_capacity((*ai_mesh).num_faces as usize);
 
         for i in 0..(*ai_mesh).num_faces {
 
             let face: *const AiFace = (*ai_mesh).faces.offset(i as isize);
-
             // This should always be the case as we have triangulated the model.
             assert_eq!((*face).num_indices, 3);
 
             // Add each of the indices of the faces.
-            indices.push(*(*face).indices.offset(0) as u16);
-            indices.push(*(*face).indices.offset(1) as u16);
-            indices.push(*(*face).indices.offset(2) as u16);
+            indices.push(*(*face).indices.offset(0) as u32);
+            indices.push(*(*face).indices.offset(1) as u32);
+            indices.push(*(*face).indices.offset(2) as u32);
 
         }
 
@@ -279,11 +247,11 @@ impl Mesh {
 
         let skeleton: Skeleton = Skeleton::from_ai_mesh(ai_mesh, &mut vertices);
 
-        return Mesh { vertices: vertices, indices: indices, material_index: material_index, skeleton: skeleton, ai_mesh: ai_mesh };
+        return Mesh { vertices, indices, material_index, skeleton, ai_mesh };
 
     }
 
-    pub fn get_material<'a>(&self, model: &'a Model) -> &'a Material {
+    pub fn get_material<'a>(&self, model: &'a Model) -> &'a MaterialData {
 
         return &model.materials[self.material_index];
 
@@ -291,38 +259,100 @@ impl Mesh {
 
 }
 
-pub struct Material {
+pub struct MaterialData {
 
-    pub texture: texture::Texture,
+    pub albedo_path: Option<String>,
+    pub normal_path: Option<String>,
+    pub metallic_path: Option<String>,
+    pub roughness_path: Option<String>,
+
+    pub color: Option<OpaqueColor>,
 
 }
 
-impl Material {
+impl MaterialData {
 
-    pub fn from_texture(texture: texture::Texture) -> Material {
-        return Material { texture: texture };
-    }
+    unsafe fn from_ai(ai_material: *const AiMaterial, path_offset: &std::path::PathBuf) -> Self {
 
-    unsafe fn from_ai(ai_material: *const AiMaterial) -> Material {
+        let mut albedo_path: Option<String> = None;
+        let mut normal_path: Option<String> = None;
+        let mut metallic_path: Option<String> = None;
+        let mut roughness_path: Option<String> = None;
 
-        let mut texture: texture::Texture = texture::Texture::new();
+        let mut color: Option<OpaqueColor> = None;
 
         if aiGetMaterialTextureCount(ai_material, AiTextureType::Diffuse) > 0 {
-
-            let mut path: *mut AiString = null_mut();
-
-            if aiGetMaterialTexture(ai_material, AiTextureType::Diffuse, 0, path, null(), null_mut(), null_mut(), null_mut(), null_mut(), null_mut()) == AiReturn::Success {
-                // Load texture from file.
-                if let Ok(tex) = texture::Texture::from_file(&String::from_utf8_lossy(&(*path).data)) {
-                    texture = tex;
-                }
-
+            let mut path: AiString = AiString::default();
+            if aiGetMaterialTexture(ai_material, AiTextureType::Diffuse, 0, &mut path, null(), null_mut(), null_mut(), null_mut(), null_mut(), null_mut()) == AiReturn::Success {
+                let mut p = path_offset.clone();
+                p.push(path.as_ref());
+                albedo_path = Some(p.to_str().expect("STRING ERROR").to_owned());
             }
-
+        }
+        if aiGetMaterialTextureCount(ai_material, AiTextureType::Normals) > 0 {
+            let mut path: AiString = AiString::default();
+            if aiGetMaterialTexture(ai_material, AiTextureType::Normals, 0, &mut path, null(), null_mut(), null_mut(), null_mut(), null_mut(), null_mut()) == AiReturn::Success {
+                let mut p = path_offset.clone();
+                p.push(path.as_ref());
+                normal_path = Some(p.to_str().expect("STRING ERROR").to_owned());
+            }
+        }
+        if aiGetMaterialTextureCount(ai_material, AiTextureType::Shininess) > 0 {
+            let mut path: AiString = AiString::default();
+            if aiGetMaterialTexture(ai_material, AiTextureType::Shininess, 0, &mut path, null(), null_mut(), null_mut(), null_mut(), null_mut(), null_mut()) == AiReturn::Success {
+                let mut p = path_offset.clone();
+                p.push(path.as_ref());
+                metallic_path = Some(p.to_str().expect("STRING ERROR").to_owned());
+            }
+        }
+        if aiGetMaterialTextureCount(ai_material, AiTextureType::Displacement) > 0 {
+            let mut path: AiString = AiString::default();
+            if aiGetMaterialTexture(ai_material, AiTextureType::Displacement, 0, &mut path, null(), null_mut(), null_mut(), null_mut(), null_mut(), null_mut()) == AiReturn::Success {
+                let mut p = path_offset.clone();
+                p.push(path.as_ref());
+                roughness_path = Some(p.to_str().expect("STRING ERROR").to_owned());
+            }
         }
 
-        return Material { texture: texture };
+        return Self { albedo_path, normal_path, metallic_path, roughness_path, color: None };
 
+    }
+
+    pub fn load_material(&self) -> Option<material::Material> {
+        let mut albedo_texture: Option<Res<texture::Texture>> = None;
+        let mut normal_texture: Option<Res<texture::Texture>> = None;
+        let mut metallic_texture: Option<Res<texture::Texture>> = None;
+        let mut roughness_texture: Option<Res<texture::Texture>> = None;
+
+        let mut color: OpaqueColor = OpaqueColor::black();
+
+        if let Some(path) = self.albedo_path.as_ref() {
+            if let Ok(tex) = texture::Texture::from_file(path) {
+                albedo_texture = Some(Res::Heap(Heap::Arc(Arc::new(tex))));
+            }
+        }
+        if let Some(path) = self.normal_path.as_ref() {
+            if let Ok(tex) = texture::Texture::from_file(path) {
+                normal_texture = Some(Res::Heap(Heap::Arc(Arc::new(tex))));
+            }
+        }
+        if let Some(path) = self.metallic_path.as_ref() {
+            if let Ok(tex) = texture::Texture::from_file(path) {
+                metallic_texture = Some(Res::Heap(Heap::Arc(Arc::new(tex))));
+            }
+        }
+        if let Some(path) = self.roughness_path.as_ref() {
+            if let Ok(tex) = texture::Texture::from_file(path) {
+                roughness_texture = Some(Res::Heap(Heap::Arc(Arc::new(tex))));
+            }
+        }
+        if let Some(c) = self.color {
+            color = c;
+        }
+        if albedo_texture.is_none() && normal_texture.is_none() && metallic_texture.is_none() && roughness_texture.is_none() {
+            return None;
+        }
+        return Some(material::Material::new(albedo_texture, normal_texture, metallic_texture, roughness_texture, color, 0.0, 0.0));
     }
 
 }
@@ -470,7 +500,7 @@ impl Animation {
 
     pub fn from_ai(ai_anim: *mut AiAnimation, root_node: *mut AiNode, global_inv_transform: Matrix4f) -> Animation {
 
-        return Animation { ai_anim: ai_anim, root_node, global_inv_transform };
+        return Animation { ai_anim, root_node, global_inv_transform };
 
     }
 
@@ -694,7 +724,7 @@ impl Animation {
 pub struct Model {
 
     pub meshes: Vec<Mesh>,
-    pub materials: Vec<Material>,
+    pub materials: Vec<MaterialData>,
     pub animations: Vec<Animation>,
     pub global_inv_transform: Matrix4f,
 
@@ -708,52 +738,69 @@ impl Model {
 
     }
 
-    pub fn from_file(path: &str) -> Option<Model> {
-
+    pub fn from_file(path: &str) -> Result<Model, &'static str> {
         let mut meshes: Vec<Mesh>;
 
-        let mut materials: Vec<Material>;
+        let mut materials: Vec<MaterialData>;
 
         let mut animations: Vec<Animation>;
 
         let mut git: Matrix4f;
 
+        let mut parent_dir: std::path::PathBuf = std::path::PathBuf::from(path);
+        parent_dir.pop();
+
         unsafe {
+            let scene: *const AiScene = aiImportFile(std::ffi::CString::new(path).expect("STRING ERROR").as_ptr() as *const i8, AIPROCESS_TRIANGULATE | AIPROCESS_GEN_SMOOTH_NORMALS);
 
-            let scene: *const AiScene = aiImportFile(std::ffi::CString::new(path).unwrap().as_ptr() as *const i8, AIPROCESS_TRIANGULATE | AIPROCESS_GEN_SMOOTH_NORMALS);
+            if scene != null() {
+                git = Matrix4f::from_ai((*(*scene).root_node).transformation).inverse_transform().unwrap();
+                meshes = Vec::with_capacity((*scene).num_meshes as usize);
 
-            git = Matrix4f::from_ai((*(*scene).root_node).transformation).inverse_transform().unwrap();
+                for i in 0..(*scene).num_meshes {
+                    meshes.push(Mesh::from_ai(*(*scene).meshes.offset(i as isize)));
+                }
+                materials = Vec::with_capacity((*scene).num_materials as usize);
 
-            meshes = Vec::with_capacity((*scene).num_meshes as usize);
+                for i in 0..(*scene).num_materials {
+                    materials.push(MaterialData::from_ai(*(*scene).materials.offset(i as isize), &parent_dir));
+                }
+                animations = Vec::with_capacity((*scene).num_animations as usize);
 
-            for i in 0..(*scene).num_meshes {
-                meshes.push(Mesh::from_ai(*(*scene).meshes.offset(i as isize)));
+                for i in 0..(*scene).num_animations {
+                    animations.push(Animation::from_ai(*(*scene).animations.offset(i as isize), (*scene).root_node, git));
+                }
+            } else {
+                return Err("Failed to load model from path");
             }
-
-            materials = Vec::with_capacity((*scene).num_materials as usize);
-
-            for i in 0..(*scene).num_materials {
-                materials.push(Material::from_ai(*(*scene).materials.offset(i as isize)));
-            }
-
-            animations = Vec::with_capacity((*scene).num_animations as usize);
-
-            for i in 0..(*scene).num_animations {
-                animations.push(Animation::from_ai(*(*scene).animations.offset(i as isize), (*scene).root_node, git));
-            }
-
         }
 
-        return Some(Model { meshes: meshes, materials: materials, animations: animations, global_inv_transform: git });
-
+        return Ok(Model { meshes, materials, animations, global_inv_transform: git });
     }
 
-    pub fn assign_material(&mut self, mesh_index: usize, material: Material) {
-
+    pub fn assign_material(&mut self, mesh_index: usize, material: MaterialData) {
         let mat_index: usize = self.meshes[mesh_index].material_index;
-
         self.materials[mat_index] = material;
+    }
 
+    /// Return the parent node containing all the meshes of the model file.
+    pub fn add_to_scene(&self, scene: &mut spatial::Scene3D, graphics: &mut render::Graphics) -> spatial::BaseEntity3D {
+        let parent_entity = scene.create_base_entity();
+        for mesh in self.meshes.iter() {
+            let buffered_mesh: BufferedMesh = BufferedMesh::new(mesh, &graphics.device);
+            let material_component: material::MaterialComponent;
+            if let Some(material_data) = self.materials.get(mesh.material_index) {
+                if let Some(material) = material_data.load_material() {
+                    material_component = material::MaterialComponent::new(material, graphics);
+                } else {
+                    material_component = material::MaterialComponent::new(material::Material::color(OpaqueColor::black(), 0.0, 1.0), graphics);
+                }
+            } else {
+                material_component = material::MaterialComponent::new(material::Material::color(OpaqueColor::black(), 0.0, 1.0), graphics);
+            }
+            let entity = scene.basic_builder().with(buffered_mesh).with(material_component).with(scene::Parent::new(parent_entity.entity)).build();
+        }
+        return parent_entity;
     }
 
 }

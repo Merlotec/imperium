@@ -1,10 +1,68 @@
 use crate::*;
 // Import specs here and expose through this module.
 pub use specs::prelude::*;
+pub use specs_hierarchy::Hierarchy;
+pub use specs_hierarchy::HierarchySystem;
+pub use specs_hierarchy::Parent as HierarchyParent;
 
 use node::Node;
 
 use std::mem;
+
+pub struct Parent {
+    entity: Entity,
+}
+
+impl Parent {
+    pub fn new(entity: Entity) -> Self {
+        return Self { entity };
+    }
+}
+
+impl HierarchyParent for Parent {
+
+    fn parent_entity(&self) -> Entity {
+        return self.entity;
+    }
+
+}
+
+impl specs::Component for Parent {
+
+    type Storage = FlaggedStorage<Self, DenseVecStorage<Self>>;
+
+}
+
+pub struct GraphicsCapsule {
+    graphics: Option<*mut render::Graphics>,
+}
+
+impl GraphicsCapsule {
+
+    pub fn new() -> Self {
+        return Self { graphics: None };
+    }
+
+    pub fn lend_graphics(&mut self, graphics: *mut render::Graphics) {
+        self.graphics = Some(graphics);
+    }
+
+    pub fn invalidate(&mut self) {
+        self.graphics = None;
+    }
+
+    pub unsafe fn unsafe_borrow(&mut self) -> Option<&mut render::Graphics> {
+        if let Some(graphics) = self.graphics {
+            return Some(&mut *graphics);
+        } else {
+            return None;
+        }
+    }
+
+}
+
+unsafe impl Send for GraphicsCapsule {}
+unsafe impl Sync for GraphicsCapsule {}
 
 /// This marker trait should be implemented by an `Aggregator` to show that component `C` is implemented intrinsically by the aggregator.
 pub trait HasIntrinsic<C: ComponentOf<Self>> : Aggregator where Self : Sized {}
@@ -27,8 +85,23 @@ impl<A: Aggregator, C: ComponentOf<A>> PrimaryEntity<A, C> {
     }
 }
 
+pub struct BaseEntity<A: Aggregator> {
+    pub entity: Entity,
+    phantom_a:  std::marker::PhantomData<A>,
+}
+
+impl<A: Aggregator> BaseEntity<A> {
+    pub fn new(entity: Entity) -> Self {
+        return Self { entity, phantom_a: std::marker::PhantomData, };
+    }
+}
+
 pub trait Camera {
     fn camera_transform(&self, node: &Node) -> CameraTransform;
+    fn absolute_transform(&self, node: &Node) -> Matrix4f {
+        let camera_transform = self.camera_transform(node);
+        return camera_transform.projection * camera_transform.view;
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -63,14 +136,14 @@ pub trait Aggregator {
     type Node: Node + ComponentOf<Self>;
 
     /// Add default components to entity.
-    fn build_entity(mut entity_builder: EntityBuilder) -> Entity where Self : Sized;
+    fn build_entity(mut entity_builder: EntityBuilder) -> EntityBuilder where Self : Sized;
 
     /// Register resources and systems.
-    fn load<'a, 'b : 'a>(&mut self, renderer: &mut render::Renderer, dispatcher_builder: scene::DispatcherBuilder<'a, 'b>, world: &mut scene::World) -> scene::DispatcherBuilder<'a, 'b>;
+    fn load<'a, 'b : 'a>(&mut self, graphics: &mut render::Graphics, dispatcher_builder: scene::DispatcherBuilder<'a, 'b>, world: &mut scene::World) -> scene::DispatcherBuilder<'a, 'b>;
 
     /// Update resources.
     /// Systems are automatically run.
-    fn update(&mut self, world: &mut World);
+    fn dispatch_systems(&mut self, world: &mut World, dispatcher: &mut Dispatcher, graphics: &mut render::Graphics);
 
 }
 
@@ -85,11 +158,11 @@ impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A>
           <<A as scene::Aggregator>::Node as specs::Component>::Storage: std::default::Default {
 
     /// Creates a new scene with all the systems registered.
-    pub fn create(mut aggregator: A, renderer: &mut render::Renderer) -> Self  {
+    pub fn create(mut aggregator: A, graphics: &mut render::Graphics) -> Self  {
         let mut world: World = World::new();
         Self::register_resources(&mut world);
-        let mut dispatcher_builder = DispatcherBuilder::new();
-        let mut dispatcher_builder = aggregator.load(renderer, dispatcher_builder, &mut world);
+        let mut dispatcher_builder = Self::register_systems(DispatcherBuilder::new());
+        let mut dispatcher_builder = aggregator.load(graphics, dispatcher_builder, &mut world);
         let mut dispatcher: Dispatcher = dispatcher_builder.build();
         // Now we start call ths `on_start` method on the systems.
         dispatcher.setup(&mut world.res);
@@ -98,14 +171,32 @@ impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A>
 
     fn register_resources(world: &mut World)  {
         world.add_resource(SceneData::new());
-        world.add_resource::<Option<render::RenderCoreUnsafe>>(None);
+        world.add_resource::<Option<render::DispatchUnsafe>>(None);
         world.register::<A::Camera>();
         world.register::<A::Node>();
     }
 
+    fn register_systems<'c, 'd : 'c>(dispatcher_builder: DispatcherBuilder<'c, 'd>) -> DispatcherBuilder<'c, 'd> {
+        dispatcher_builder.with(HierarchySystem::<Parent>::new(), "hierarchy_system", &[])
+    }
+
     pub fn create_primary_entity<C: ComponentOf<A>>(&mut self, component: C) -> PrimaryEntity<A, C> {
-        let entity: Entity = A::build_entity(self.world.create_entity().with(component));
+        let entity: Entity = A::build_entity(self.world.create_entity().with(component)).build();
         return PrimaryEntity::new(entity);
+    }
+
+    pub fn create_primary_entity_from<C: ComponentOf<A>>(&mut self, component: C, mut builder: EntityBuilder) -> PrimaryEntity<A, C> {
+        let entity: Entity = A::build_entity(builder.with(component)).build();
+        return PrimaryEntity::new(entity);
+    }
+
+    pub fn create_base_entity(&mut self) -> BaseEntity<A> {
+        let entity: Entity = A::build_entity(self.world.create_entity()).build();
+        return BaseEntity::new(entity);
+    }
+
+    pub fn basic_builder(&mut self) -> EntityBuilder {
+        return A::build_entity(self.world.create_entity());
     }
 
     // Interior mutability on return type.
@@ -125,19 +216,9 @@ impl<'a, 'b : 'a, A: Aggregator> Scene<'a, 'b, A>
     }
 
     /// Dispatches all the systems in the scene which will cause the scene to be updated and rendered.
-    pub fn dispatch_systems(&mut self, graphics: &mut render::Graphics, encoder: &mut command::Encoder) {
+    pub fn dispatch_systems(&mut self, graphics: &mut render::Graphics) {
         self.update_scene_data();
-        self.aggregator.update(&mut self.world);
-        let render_core_unsafe: render::RenderCoreUnsafe = render::RenderCoreUnsafe::new(graphics, encoder);
-        // We may need some unsafe magic... THE THRILL
-        // Its ok though because the object will not live beyond this function - we invalidate it before the pointer 'borrow' is over.
-        let render_resource: Option<render::RenderCoreUnsafe> = unsafe { Some(render_core_unsafe) };
-        self.world.add_resource::<Option<render::RenderCoreUnsafe>>(render_resource);
-        // Dispatch.
-        self.dispatcher.dispatch(&self.world.res);
-        // Invalidate renderer to ensure no unsafe uses.
-        let mut render_resource_live = self.world.write_resource::<Option<render::RenderCoreUnsafe>>();
-        render_resource_live.take();
+        self.aggregator.dispatch_systems(&mut self.world, &mut self.dispatcher, graphics);
     }
 
 }

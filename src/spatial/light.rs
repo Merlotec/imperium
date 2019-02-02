@@ -20,7 +20,7 @@ impl LightComponent {
 }
 
 impl specs::Component for LightComponent {
-    type Storage=specs::VecStorage<Self>;
+    type Storage=specs::FlaggedStorage<Self, specs::DenseVecStorage<Self>>;
 }
 
 /// Represents a directional light which emits from a direction rather than a point.
@@ -29,22 +29,19 @@ impl specs::Component for LightComponent {
 #[derive(Copy, Clone)]
 pub struct PointLight {
 
-    pub ambient: f32,
-    pub diffuse: f32,
-    pub specular: f32,
     pub color: OpaqueColor,
 
 }
 
 impl PointLight {
 
-    pub fn new(ambient: f32, diffuse: f32, specular: f32, color: OpaqueColor) -> Self {
-        return Self { ambient, diffuse, specular, color };
+    pub fn new(color: OpaqueColor) -> Self {
+        return Self {  color };
     }
 
     /// Creates a directional light with intensity and color approximately that of the sun and with the direction specified.
     pub fn create_sun() -> Self {
-        return Self::new(0.5, 0.8, 0.5, OpaqueColor::new(1.0, 0.88, 0.48));
+        return Self::new(OpaqueColor::new(1.0, 0.88, 0.48));
     }
 
 }
@@ -52,7 +49,7 @@ impl PointLight {
 impl Light for PointLight {
 
     fn get_data(&self, pos: Vector3f) -> LightData {
-        return LightData::new(pos, self.color, self.ambient, self.diffuse, self.specular);
+        return LightData::new(pos, self.color);
     }
 
 }
@@ -62,20 +59,18 @@ impl Light for PointLight {
 pub struct LightData {
     pub pos: Al16<Vector3f>,
     pub color: OpaqueColor,
-    pub ambient: f32,
-    pub diffuse: f32,
-    pub specular: f32,
+
 }
 
 impl LightData {
-    pub fn new(pos: Vector3f, color: OpaqueColor, ambient: f32, diffuse: f32, specular: f32) -> Self {
-        return Self { pos: Al16::new(pos), color, ambient, diffuse, specular };
+    pub fn new(pos: Vector3f, color: OpaqueColor) -> Self {
+        return Self { pos: Al16::new(pos), color };
     }
 }
 
 impl Default for LightData {
     fn default() -> Self {
-        return Self::new(Vector3f::zero(), OpaqueColor::black(), 0.0, 0.0, 0.0);
+        return Self::new(Vector3f::zero(), OpaqueColor::black());
     }
 }
 
@@ -123,19 +118,16 @@ impl LightsList {
 /// A struct which contains light data and controls the GPU buffer.
 pub struct LightsController {
     pub lights: LightsList,
-    pub buffer: buffer::SharedBuffer,
+    pub buffer: buffer::Buffer,
 }
 
 impl LightsController {
 
     pub fn new(device: &mut core::Device) -> Self {
         let lights: LightsList = LightsList::new();
-        return Self { lights, buffer: buffer::SharedBuffer::new(buffer::Buffer::alloc_uniform(&[lights], device)) };
+        return Self { lights, buffer: buffer::Buffer::alloc_uniform(&[lights], device) };
     }
 
-    pub fn clone_buffer(&self) -> buffer::SharedBuffer {
-        return self.buffer.clone();
-    }
 
     pub fn add_light(&mut self, data: LightData) {
         self.lights.add_light(data);
@@ -145,7 +137,7 @@ impl LightsController {
         return self.lights.remove_light(index);
     }
 
-    pub fn update_buffer(&self, device: &mut core::Device) {
+    pub fn update_buffer(&mut self, device: &mut core::Device) {
         self.buffer.fill_buffer(&[self.lights], device);
     }
 

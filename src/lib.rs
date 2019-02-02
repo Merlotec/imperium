@@ -12,8 +12,10 @@ pub use backend::Backend;
 pub extern crate gfx_hal as gfx;
 pub extern crate assimp_sys as ai;
 pub extern crate libc;
-extern crate cgmath;
+pub extern crate cgmath;
 pub extern crate specs;
+pub extern crate specs_hierarchy;
+pub extern crate winit;
 
 pub mod types;
 pub use types::*;
@@ -39,4 +41,4 @@ pub mod script;
 
 pub mod app;
 
-pub use core::LogExpect;
+pub use crate::core::LogExpect;
